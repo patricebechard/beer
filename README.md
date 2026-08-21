@@ -6,8 +6,10 @@ A pint of lager that lives in your phone — the old iBeer trick, rebuilt as a w
 
 ## Features
 
-- **Tilt to drink** — the pour rate scales with how far you tip the phone, from a slow sip at 25° to chugging it upside down in under two seconds
+- **Tilt to drink** — the pour rate scales with how far you tip the phone, from a slow sip at 25° to chugging it flat out in a couple of seconds
+- **It only spills what clears the rim** — tilt a half-full screen and nothing leaves; the beer runs out only once the surface actually reaches the lip, so you have to keep tipping further to finish it
 - **Hold upright to fill** — an empty glass refills whenever you bring the phone back to vertical
+- **Five things on tap** — Michelob Ultra, Pliny the Elder, HYPA, Guinness and a Clamato Caesar, each with its own colour, clarity, head and fizz; tap the badge in the corner to switch
 - **The screen is the glass** — no vessel drawn around it; the beer runs to all four edges
 - **Real liquid surface** — the beer stays level with the actual horizon no matter how you hold the phone, and the volume is conserved exactly as the surface tilts
 - **No screen flipping** — tilting sideways is exactly the motion that makes a phone rotate to landscape, so the app cancels the rotation out and stays glued to the phone
@@ -33,6 +35,9 @@ A pint of lager that lives in your phone — the old iBeer trick, rebuilt as a w
 | `R` or `0` | Level it out |
 | `Space` | Top it up |
 | `M` | Mute |
+| Badge, top right | Pick your drink |
+| `B` | Next drink |
+| `Esc` | Close the menu |
 
 On iOS the browser asks permission before it will report motion — that's what the **POUR** button on the intro screen is for.
 
@@ -54,8 +59,10 @@ The app will appear as a standalone app on your home screen.
 
 ## Notes
 
-The icons are generated, not drawn — run `python3 make_icons.py` to rebuild them.
+The icons are generated, not drawn — run `python3 make_icons.py` to rebuild them. The drink badges in the menu are likewise drawn from each drink's own palette rather than being brand artwork.
 
 Orientation comes from `deviceorientation`'s `beta`/`gamma`, converted to a gravity vector in the device's own frame. Tilt is the angle between the screen's up axis and world up, so it reads 0° upright and 90° flat on a table, whichever way you spin the phone about its own axis. The liquid is drawn in a frame rotated to align with gravity, and the surface height is solved by bisection against the screen outline so the volume on screen always matches the fill level.
+
+Beer leaves the screen only when the surface plane actually clears the rim, which is the top edge. Rolling sideways is solved exactly: the lower of the two top corners is the lip, and the retained volume is the area of the screen below that line. Tipping the phone away from you leaves the on-screen surface flat, so that axis uses the closed form for a box of depth `DEPTH` tipped by the out-of-plane angle — a wedge of liquid slides out across the floor and spills once it clears the lip. The two factors multiply, which is exact whenever either axis is upright. The upshot is that a half-full screen leaks nothing at 45°, and finishing a pint means tipping past about 85°.
 
 Phones auto-rotate to landscape as soon as you tip them far enough sideways, which is the same motion you use to drink. A page can't refuse that — orientation locks need fullscreen, and iOS Safari has no Fullscreen API — so the app counter-rotates itself by the same amount to cancel it out. Which way to spin is read off gravity rather than `screen.orientation.angle`, whose sign is inconsistent across platforms: if the device's right edge is down, its top edge points to the viewer's right, so the content turns +90° to line back up with the phone.

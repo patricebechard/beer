@@ -1,4 +1,4 @@
-const CACHE = 'beer-v1';
+const CACHE = 'beer-v2';
 const ASSETS = ['./', './index.html', './manifest.json'];
 
 self.addEventListener('install', (e) => {

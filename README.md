@@ -1,6 +1,6 @@
 # Beer
 
-A pint of lager that lives in your phone — the old iBeer trick, rebuilt as a web app. Hold your phone upright and the glass fills; tilt it back and you drink it, faster the further you tilt. Built as a Progressive Web App (PWA) — install it to your home screen and drink offline, no app store needed. No ads, no analytics, no tracking.
+A pint of lager that lives in your phone — the old iBeer trick, rebuilt as a web app. The beer fills the whole screen, edge to edge: hold your phone upright and it fills; tilt it back and you drink it, faster the further you tilt. Built as a Progressive Web App (PWA) — install it to your home screen and drink offline, no app store needed. No ads, no analytics, no tracking.
 
 **Pour one now: [patricebechard.com/beer](https://patricebechard.com/beer/)**
 
@@ -8,7 +8,9 @@ A pint of lager that lives in your phone — the old iBeer trick, rebuilt as a w
 
 - **Tilt to drink** — the pour rate scales with how far you tip the phone, from a slow sip at 25° to chugging it upside down in under two seconds
 - **Hold upright to fill** — an empty glass refills whenever you bring the phone back to vertical
+- **The screen is the glass** — no vessel drawn around it; the beer runs to all four edges
 - **Real liquid surface** — the beer stays level with the actual horizon no matter how you hold the phone, and the volume is conserved exactly as the surface tilts
+- **No screen flipping** — tilting sideways is exactly the motion that makes a phone rotate to landscape, so the app cancels the rotation out and stays glued to the phone
 - **Foam head** — builds while you pour, froths up when you drink, then settles
 - **Sloshing** — a damped spring tips and ripples the surface when you move the glass
 - **Carbonation** — bubbles rise against real gravity and pop into the head
@@ -24,11 +26,11 @@ A pint of lager that lives in your phone — the old iBeer trick, rebuilt as a w
 
 | | |
 |---|---|
-| Phone upright | Fill the glass |
+| Phone upright | Fill it up |
 | Tilt the phone | Drink — the more tilt, the faster it pours |
-| Tap the glass | Top it up |
+| Tap the screen | Top it up |
 | Drag / arrow keys | Tilt, when there's no motion sensor |
-| `R` or `0` | Level the glass |
+| `R` or `0` | Level it out |
 | `Space` | Top it up |
 | `M` | Mute |
 
@@ -54,4 +56,6 @@ The app will appear as a standalone app on your home screen.
 
 The icons are generated, not drawn — run `python3 make_icons.py` to rebuild them.
 
-Orientation comes from `deviceorientation`'s `beta`/`gamma`, converted to a gravity vector. Tilt is the angle between the screen's up axis and world up, so it reads 0° upright and 90° flat on a table, whichever way you spin the phone about its own axis. The liquid is drawn in a frame rotated to align with gravity, and the surface height is solved by bisection against the glass outline so the volume on screen always matches the fill level.
+Orientation comes from `deviceorientation`'s `beta`/`gamma`, converted to a gravity vector in the device's own frame. Tilt is the angle between the screen's up axis and world up, so it reads 0° upright and 90° flat on a table, whichever way you spin the phone about its own axis. The liquid is drawn in a frame rotated to align with gravity, and the surface height is solved by bisection against the screen outline so the volume on screen always matches the fill level.
+
+Phones auto-rotate to landscape as soon as you tip them far enough sideways, which is the same motion you use to drink. A page can't refuse that — orientation locks need fullscreen, and iOS Safari has no Fullscreen API — so the app counter-rotates itself by the same amount to cancel it out. Which way to spin is read off gravity rather than `screen.orientation.angle`, whose sign is inconsistent across platforms: if the device's right edge is down, its top edge points to the viewer's right, so the content turns +90° to line back up with the phone.

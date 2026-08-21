@@ -22,12 +22,22 @@ html, body {
   overscroll-behavior:none;
 }
 body { position:fixed; inset:0; }
+
+/* Everything lives inside #app, which is counter-rotated so the beer stays
+   glued to the phone even when the browser flips the page to landscape. */
+#app {
+  position:fixed; top:50%; left:50%;
+  transform-origin:50% 50%;
+  overflow:hidden;
+}
 canvas { display:block; position:absolute; inset:0; }
 
+/* The notch sits at the device's natural top, which after counter-rotation is
+   the top of #app -- so take whichever inset is currently reporting it. */
 #hud {
   position:absolute; top:0; left:0; right:0;
   display:flex; align-items:center; justify-content:space-between;
-  padding:calc(env(safe-area-inset-top) + 10px) 14px 0;
+  padding:calc(max(env(safe-area-inset-top), env(safe-area-inset-left), env(safe-area-inset-right)) + 10px) 14px 0;
   z-index:5; pointer-events:none;
 }
 #hud > * { pointer-events:auto; }
@@ -43,22 +53,29 @@ canvas { display:block; position:absolute; inset:0; }
   color:rgba(255,255,255,0.9); backdrop-filter:blur(4px);
   letter-spacing:0.5px;
 }
+/* the hint and flash sit on top of the beer now, so both get a dark pill to
+   stay legible against gold */
 #hint {
-  position:absolute; left:0; right:0;
-  bottom:calc(env(safe-area-inset-bottom) + 16px);
-  text-align:center; z-index:5; pointer-events:none;
-  color:rgba(255,255,255,0.62); font-size:14px; font-weight:600;
-  letter-spacing:0.6px; text-shadow:0 1px 3px rgba(0,0,0,0.6);
+  position:absolute; left:50%; transform:translateX(-50%);
+  bottom:calc(max(env(safe-area-inset-bottom), env(safe-area-inset-left), env(safe-area-inset-right)) + 16px);
+  z-index:5; pointer-events:none; white-space:nowrap;
+  background:rgba(0,0,0,0.30); border-radius:999px; padding:8px 18px;
+  backdrop-filter:blur(4px);
+  color:rgba(255,255,255,0.88); font-size:14px; font-weight:600;
+  letter-spacing:0.6px; text-shadow:0 1px 3px rgba(0,0,0,0.5);
   transition:opacity 0.3s;
 }
 #flash {
-  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-  z-index:6; pointer-events:none;
-  font-size:44px; font-weight:800; color:#ffd479;
-  text-shadow:0 3px 12px rgba(0,0,0,0.7);
-  opacity:0; transform:scale(0.8); transition:opacity 0.3s, transform 0.4s;
+  position:absolute; top:50%; left:50%;
+  z-index:6; pointer-events:none; white-space:nowrap;
+  background:rgba(22,12,5,0.55); border-radius:22px; padding:14px 30px;
+  backdrop-filter:blur(4px);
+  font-size:44px; font-weight:800; color:#ffe9a8;
+  text-shadow:0 3px 12px rgba(0,0,0,0.8);
+  opacity:0; transform:translate(-50%,-50%) scale(0.8);
+  transition:opacity 0.3s, transform 0.4s;
 }
-#flash.show { opacity:1; transform:scale(1); }
+#flash.show { opacity:1; transform:translate(-50%,-50%) scale(1); }
 
 #overlay {
   position:fixed; inset:0; display:flex; flex-direction:column;
@@ -84,20 +101,22 @@ canvas { display:block; position:absolute; inset:0; }
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
+<div id="app">
+  <canvas id="c"></canvas>
 
-<div id="hud">
-  <button id="sound-btn" class="icon-btn" title="Sound">&#128266;</button>
-  <div id="tally">&#127866; <span id="tally-n">0</span></div>
-</div>
+  <div id="hud">
+    <button id="sound-btn" class="icon-btn" title="Sound">&#128266;</button>
+    <div id="tally">&#127866; <span id="tally-n">0</span></div>
+  </div>
 
-<div id="hint"></div>
-<div id="flash"></div>
+  <div id="hint"></div>
+  <div id="flash"></div>
 
-<div id="overlay" class="show">
-  <h1>BEER</h1>
-  <div class="sub" id="ol-sub">Hold your phone upright to pour.<br>Tilt it back to drink.</div>
-  <button id="ol-btn">POUR</button>
+  <div id="overlay" class="show">
+    <h1>BEER</h1>
+    <div class="sub" id="ol-sub">Hold your phone upright to pour.<br>Tilt it back to drink.</div>
+    <button id="ol-btn">POUR</button>
+  </div>
 </div>
 
 <script>
@@ -113,50 +132,30 @@ const FILL_RATE      = 0.33;  // level per second while filling
 const DRAIN_RATE_MAX = 0.75;  // level per second at full tilt
 const DRAIN_CURVE    = 1.35;  // >1 so a small tilt only trickles
 const EMPTY_EPS      = 0.004;
-const HEADROOM       = 0.15;  // top slice of the glass kept for the foam head
+const HEADROOM       = 0.09;  // top slice of the screen kept for the foam head
 const SLOSH_MAX      = 0.20;  // rad: how far the surface can tip past level
 const GRAV_TAU       = 0.10;  // s: gravity low-pass, so jitter doesn't slosh the beer
 const DOWN_TAU       = 0.07;  // s: low-pass on the surface angle
-const MAX_BUBBLES    = 110;
+const MAX_BUBBLES    = 150;
 
 /* ── canvas ── */
+const app    = document.getElementById('app');
 const canvas = document.getElementById('c');
 const ctx    = canvas.getContext('2d');
 let W = 0, H = 0, dpr = 1;
 
-/* glass geometry (canvas/CSS pixels) */
+/* The glass IS the screen: the beer fills edge to edge, iBeer style. Kept as a
+   polygon so the surface solver and clipping work for any shape. */
 let glass = null;
 
 function buildGlass() {
-  const cx = W / 2;
-  const top = Math.max(56, H * 0.11);
-  const bot = H - Math.max(46, H * 0.09);
-  const hh  = bot - top;
-  const topHalf = Math.min(W * 0.40, hh * 0.30);
-  const botHalf = topHalf * 0.80;
-  const r = Math.min(botHalf * 0.55, hh * 0.10);
-
-  // interior outline, clockwise from top-left
-  const pts = [];
-  pts.push({ x: cx - topHalf, y: top });
-  // left wall down to the rounded bottom-left corner
-  pts.push({ x: cx - botHalf, y: bot - r });
-  for (let i = 1; i <= 8; i++) {
-    const a = (i / 8) * (Math.PI / 2);
-    pts.push({ x: cx - botHalf + r - Math.cos(a) * r, y: bot - r + Math.sin(a) * r });
-  }
-  for (let i = 0; i <= 8; i++) {
-    const a = (i / 8) * (Math.PI / 2);
-    pts.push({ x: cx + botHalf - r + Math.sin(a) * r, y: bot - r + Math.cos(a) * r });
-  }
-  pts.push({ x: cx + topHalf, y: top });
-
+  const pts = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: H }, { x: 0, y: H }];
   let area = 0;
   for (let i = 0; i < pts.length; i++) {
     const a = pts[i], b = pts[(i + 1) % pts.length];
     area += a.x * b.y - b.x * a.y;
   }
-  glass = { cx, cy: (top + bot) / 2, top, bot, topHalf, botHalf, r, pts, area: Math.abs(area) / 2 };
+  glass = { cx: W / 2, cy: H / 2, top: 0, bot: H, span: H, pts, area: Math.abs(area) / 2 };
 }
 
 function glassPath(c) {
@@ -176,10 +175,45 @@ function inGlass(x, y) {
   return inside;
 }
 
-function resize() {
+/* ── keeping the screen still ─────────────────────────────────
+   Phones auto-rotate to landscape as soon as you tip them far enough sideways,
+   which is exactly the motion used to drink. A web page can't refuse that
+   (orientation locks need fullscreen, and iOS Safari has none), so instead the
+   whole app is counter-rotated to cancel it out: the beer stays glued to the
+   phone and only real gravity moves it.
+
+   Which way to spin is read off gravity rather than screen.orientation.angle,
+   whose sign is inconsistent across platforms: if the device's right edge is
+   down (gx > 0) its top edge points to the viewer's right, so the content has
+   to turn +90 degrees to line back up with the device. */
+let contentRot = 0;
+
+function screenAngle() {
+  if (screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
+  return window.orientation || 0;
+}
+
+function contentRotation() {
+  const a = Math.abs(screenAngle());
+  if (a === 0) return 0;                    // browser hasn't rotated: nothing to undo
+  if (a === 180) return 180;
+  if (Math.abs(tgx) > 0.3) return tgx > 0 ? 90 : -90;
+  return contentRot === -90 ? -90 : 90;     // near-flat: keep the current choice
+}
+
+let layoutKey = '';
+
+function layout() {
+  contentRot = contentRotation();
+  const swap = contentRot === 90 || contentRot === -90;
   dpr = Math.min(window.devicePixelRatio || 1, 3);
-  W = window.innerWidth;
-  H = window.innerHeight;
+  W = swap ? window.innerHeight : window.innerWidth;
+  H = swap ? window.innerWidth  : window.innerHeight;
+
+  app.style.width  = W + 'px';
+  app.style.height = H + 'px';
+  app.style.transform = `translate(-50%, -50%) rotate(${contentRot}deg)`;
+
   canvas.width  = Math.round(W * dpr);
   canvas.height = Math.round(H * dpr);
   canvas.style.width  = W + 'px';
@@ -187,9 +221,19 @@ function resize() {
   buildGlass();
 }
 
+/* re-lay-out only when something actually changed (also catches the iOS URL bar
+   sliding away, which resizes the viewport without firing orientationchange) */
+function checkLayout() {
+  const key = [contentRotation(), window.innerWidth, window.innerHeight,
+               Math.min(window.devicePixelRatio || 1, 3)].join(':');
+  if (key !== layoutKey) { layoutKey = key; layout(); }
+}
+
 /* ── orientation ── */
-/* Unit gravity vector in the *screen* frame: x right, y up, z out of the glass.
-   Upright portrait is (0,-1,0). Derived from deviceorientation beta/gamma.
+/* Unit gravity vector in the *device* frame: x right, y up, z out of the glass.
+   Upright portrait is (0,-1,0). Derived from deviceorientation beta/gamma. The
+   device frame is fixed to the physical phone and never rotates with the
+   display, which is exactly what we want now that #app is counter-rotated.
    Sensors report at wildly different rates, so events only set the target and
    all smoothing happens per frame. */
 let tgx = 0, tgy = -1, tgz = 0;      // target (raw)
@@ -207,21 +251,9 @@ function onOrient(e) {
   hasSensor = true;
   const b = (e.beta  || 0) * Math.PI / 180;
   const g = (e.gamma || 0) * Math.PI / 180;
-  // gravity in device coordinates
-  const x =  Math.sin(g) * Math.cos(b);
-  const y = -Math.sin(b);
-  const z = -Math.cos(g) * Math.cos(b);
-  // rotate the in-plane part into the screen frame when the display is rotated
-  const a = -screenAngle() * Math.PI / 180;
-  const ca = Math.cos(a), sa = Math.sin(a);
-  tgx = x * ca - y * sa;
-  tgy = x * sa + y * ca;
-  tgz = z;
-}
-
-function screenAngle() {
-  if (screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
-  return window.orientation || 0;
+  tgx =  Math.sin(g) * Math.cos(b);
+  tgy = -Math.sin(b);
+  tgz = -Math.cos(g) * Math.cos(b);
 }
 
 function updateOrientation(dt) {
@@ -416,7 +448,7 @@ function spawnBubble(vs, big) {
 }
 
 function updateBubbles(dt, vs) {
-  const rate = level > 0.02 ? 26 + pourRate * 120 : 0;
+  const rate = level > 0.02 ? 42 + pourRate * 150 : 0;
   let n = rate * dt;
   while (n > 0) {
     if (Math.random() < Math.min(1, n) && bubbles.length < MAX_BUBBLES) spawnBubble(vs, Math.random() < pourRate * 1.2);
@@ -454,18 +486,6 @@ function drawBackdrop() {
   g.addColorStop(1, '#120c08');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
-}
-
-function drawGlassBack() {
-  ctx.save();
-  glassPath(ctx);
-  const g = ctx.createLinearGradient(glass.cx - glass.topHalf, 0, glass.cx + glass.topHalf, 0);
-  g.addColorStop(0, 'rgba(255,255,255,0.09)');
-  g.addColorStop(0.4, 'rgba(255,255,255,0.03)');
-  g.addColorStop(1, 'rgba(255,255,255,0.07)');
-  ctx.fillStyle = g;
-  ctx.fill();
-  ctx.restore();
 }
 
 function drawLiquid(vs) {
@@ -538,7 +558,7 @@ function drawLiquid(vs) {
     ctx.restore();   // back to (u,v) space, glass still clipped
 
     // foam head riding the surface
-    const thick = (6 + foamAmt * 46) * Math.min(1, level * 14);
+    const thick = (0.006 + foamAmt * 0.075) * glass.span * Math.min(1, level * 14);
     const step2 = Math.max(4, (u1 - u0) / 80);
     ctx.beginPath();
     ctx.moveTo(u0, surfaceAt(u0, vs) - thick);
@@ -581,72 +601,10 @@ function drawLiquid(vs) {
   ctx.restore();
 }
 
-function drawGlassFront() {
-  const g = glass;
-
-  // inner shadow along the walls
-  ctx.save();
-  glassPath(ctx);
-  ctx.clip();
-  const sg = ctx.createLinearGradient(g.cx - g.topHalf, 0, g.cx + g.topHalf, 0);
-  sg.addColorStop(0, 'rgba(0,0,0,0.30)');
-  sg.addColorStop(0.13, 'rgba(0,0,0,0)');
-  sg.addColorStop(0.87, 'rgba(0,0,0,0)');
-  sg.addColorStop(1, 'rgba(0,0,0,0.30)');
-  ctx.fillStyle = sg;
-  ctx.fill();
-
-  // specular streaks
-  ctx.fillStyle = 'rgba(255,255,255,0.13)';
-  ctx.fillRect(g.cx - g.topHalf * 0.74, g.top, g.topHalf * 0.10, g.bot - g.top);
-  ctx.fillStyle = 'rgba(255,255,255,0.07)';
-  ctx.fillRect(g.cx - g.topHalf * 0.56, g.top, g.topHalf * 0.05, g.bot - g.top);
-  ctx.fillStyle = 'rgba(255,255,255,0.10)';
-  ctx.fillRect(g.cx + g.topHalf * 0.60, g.top, g.topHalf * 0.07, g.bot - g.top);
-  ctx.restore();
-
-  // glass walls
-  ctx.save();
-  ctx.lineJoin = 'round';
-  glassPath(ctx);
-  ctx.lineWidth = Math.max(5, W * 0.017);
-  ctx.strokeStyle = 'rgba(214,232,240,0.16)';
-  ctx.stroke();
-  ctx.lineWidth = Math.max(2, W * 0.006);
-  ctx.strokeStyle = 'rgba(238,250,255,0.42)';
-  ctx.stroke();
-  ctx.restore();
-
-  // rim
-  ctx.save();
-  ctx.lineWidth = Math.max(3, W * 0.011);
-  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-  ctx.beginPath();
-  ctx.ellipse(g.cx, g.top, g.topHalf, Math.max(6, g.topHalf * 0.12), 0, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-  ctx.lineWidth = Math.max(1, W * 0.004);
-  ctx.beginPath();
-  ctx.ellipse(g.cx, g.top + Math.max(6, g.topHalf * 0.12) * 0.55, g.topHalf * 0.92, Math.max(4, g.topHalf * 0.07), 0, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.restore();
-
-  // base
-  ctx.save();
-  ctx.strokeStyle = 'rgba(255,255,255,0.20)';
-  ctx.lineWidth = Math.max(2, W * 0.005);
-  ctx.beginPath();
-  ctx.ellipse(g.cx, g.bot - 2, g.botHalf * 0.92, Math.max(4, g.botHalf * 0.09), 0, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.restore();
-}
-
 function draw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   drawBackdrop();
-  drawGlassBack();
   drawLiquid(surfaceV());
-  drawGlassFront();
 }
 
 /* ── hint text ── */
@@ -779,6 +737,7 @@ function loop(now) {
   dt = Math.min(dt, 0.05);   // cap so a background tab can't dump a beer
 
   updateOrientation(dt);
+  checkLayout();
   projectGlass();
   updateLevel(dt);
   const vs = surfaceV();
@@ -815,12 +774,19 @@ async function requestMotion() {
   return true;
 }
 
+/* If the platform will actually hold a portrait lock (Android Chrome, and only
+   in fullscreen) let it -- the counter-rotation then has nothing to do. */
+function tryOrientationLock() {
+  try { screen.orientation.lock('portrait').catch(() => {}); } catch (_) { /* unsupported */ }
+}
+
 olBtn.addEventListener('click', async (e) => {
   e.stopPropagation();
   snd.start();
   started = true;
   await requestMotion();
   overlay.classList.remove('show');
+  tryOrientationLock();
   requestWakeLock();
   // give the sensor a moment; if nothing arrives we fall back to dragging
   setTimeout(() => {
@@ -878,8 +844,8 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') { lastTime = 0; requestWakeLock(); }
 });
 
-window.addEventListener('resize', resize);
-window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+window.addEventListener('resize', checkLayout);
+window.addEventListener('orientationchange', () => setTimeout(checkLayout, 120));
 
 /* ── service worker ── */
 if ('serviceWorker' in navigator) {
@@ -887,7 +853,7 @@ if ('serviceWorker' in navigator) {
 }
 
 /* ── start ── */
-resize();
+checkLayout();
 projectGlass();
 requestAnimationFrame(loop);
 

@@ -1,0 +1,897 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1b1410">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Beer</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%;
+  overflow:hidden;
+  background:#1b1410;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  -webkit-user-select:none; user-select:none;
+  -webkit-tap-highlight-color:transparent;
+  touch-action:none;
+  overscroll-behavior:none;
+}
+body { position:fixed; inset:0; }
+canvas { display:block; position:absolute; inset:0; }
+
+#hud {
+  position:absolute; top:0; left:0; right:0;
+  display:flex; align-items:center; justify-content:space-between;
+  padding:calc(env(safe-area-inset-top) + 10px) 14px 0;
+  z-index:5; pointer-events:none;
+}
+#hud > * { pointer-events:auto; }
+.icon-btn {
+  background:rgba(0,0,0,0.28); border:none; border-radius:999px;
+  width:40px; height:40px; font-size:19px; line-height:1;
+  color:#fff; cursor:pointer; backdrop-filter:blur(4px);
+}
+.icon-btn:active { transform:scale(0.93); }
+#tally {
+  background:rgba(0,0,0,0.28); border-radius:999px;
+  padding:8px 14px; font-size:15px; font-weight:700;
+  color:rgba(255,255,255,0.9); backdrop-filter:blur(4px);
+  letter-spacing:0.5px;
+}
+#hint {
+  position:absolute; left:0; right:0;
+  bottom:calc(env(safe-area-inset-bottom) + 16px);
+  text-align:center; z-index:5; pointer-events:none;
+  color:rgba(255,255,255,0.62); font-size:14px; font-weight:600;
+  letter-spacing:0.6px; text-shadow:0 1px 3px rgba(0,0,0,0.6);
+  transition:opacity 0.3s;
+}
+#flash {
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  z-index:6; pointer-events:none;
+  font-size:44px; font-weight:800; color:#ffd479;
+  text-shadow:0 3px 12px rgba(0,0,0,0.7);
+  opacity:0; transform:scale(0.8); transition:opacity 0.3s, transform 0.4s;
+}
+#flash.show { opacity:1; transform:scale(1); }
+
+#overlay {
+  position:fixed; inset:0; display:flex; flex-direction:column;
+  align-items:center; justify-content:center;
+  background:rgba(12,8,5,0.72); z-index:10; backdrop-filter:blur(3px);
+  opacity:0; pointer-events:none; transition:opacity 0.3s;
+}
+#overlay.show { opacity:1; pointer-events:auto; }
+#overlay h1 {
+  color:#ffc247; font-size:44px; letter-spacing:2px; margin-bottom:8px;
+  text-shadow:0 3px 0 #7a4a10, 0 4px 14px rgba(0,0,0,0.5);
+}
+#overlay .sub {
+  color:rgba(255,255,255,0.72); font-size:16px; line-height:1.55;
+  margin-bottom:26px; max-width:280px; text-align:center;
+}
+#overlay button {
+  background:#e8a33a; color:#3a230a; border:none; border-radius:8px;
+  padding:14px 42px; font-size:18px; font-weight:800; cursor:pointer;
+  box-shadow:0 3px 0 #b57a1c; letter-spacing:1px;
+}
+#overlay button:active { transform:translateY(2px); box-shadow:0 1px 0 #b57a1c; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="hud">
+  <button id="sound-btn" class="icon-btn" title="Sound">&#128266;</button>
+  <div id="tally">&#127866; <span id="tally-n">0</span></div>
+</div>
+
+<div id="hint"></div>
+<div id="flash"></div>
+
+<div id="overlay" class="show">
+  <h1>BEER</h1>
+  <div class="sub" id="ol-sub">Hold your phone upright to pour.<br>Tilt it back to drink.</div>
+  <button id="ol-btn">POUR</button>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* ── tuning ── */
+const FILL_TILT      = 16;    // deg from upright: within this, the glass fills
+const FILL_STOP      = 24;    // deg: hysteresis, tilting past this halts a pour
+const DRAIN_TILT     = 20;    // deg: tilt past this and beer starts flowing out
+const DRAIN_TILT_MAX = 100;   // deg: tilt where the pour rate maxes out
+const FILL_RATE      = 0.33;  // level per second while filling
+const DRAIN_RATE_MAX = 0.75;  // level per second at full tilt
+const DRAIN_CURVE    = 1.35;  // >1 so a small tilt only trickles
+const EMPTY_EPS      = 0.004;
+const HEADROOM       = 0.15;  // top slice of the glass kept for the foam head
+const SLOSH_MAX      = 0.20;  // rad: how far the surface can tip past level
+const GRAV_TAU       = 0.10;  // s: gravity low-pass, so jitter doesn't slosh the beer
+const DOWN_TAU       = 0.07;  // s: low-pass on the surface angle
+const MAX_BUBBLES    = 110;
+
+/* ── canvas ── */
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+let W = 0, H = 0, dpr = 1;
+
+/* glass geometry (canvas/CSS pixels) */
+let glass = null;
+
+function buildGlass() {
+  const cx = W / 2;
+  const top = Math.max(56, H * 0.11);
+  const bot = H - Math.max(46, H * 0.09);
+  const hh  = bot - top;
+  const topHalf = Math.min(W * 0.40, hh * 0.30);
+  const botHalf = topHalf * 0.80;
+  const r = Math.min(botHalf * 0.55, hh * 0.10);
+
+  // interior outline, clockwise from top-left
+  const pts = [];
+  pts.push({ x: cx - topHalf, y: top });
+  // left wall down to the rounded bottom-left corner
+  pts.push({ x: cx - botHalf, y: bot - r });
+  for (let i = 1; i <= 8; i++) {
+    const a = (i / 8) * (Math.PI / 2);
+    pts.push({ x: cx - botHalf + r - Math.cos(a) * r, y: bot - r + Math.sin(a) * r });
+  }
+  for (let i = 0; i <= 8; i++) {
+    const a = (i / 8) * (Math.PI / 2);
+    pts.push({ x: cx + botHalf - r + Math.sin(a) * r, y: bot - r + Math.cos(a) * r });
+  }
+  pts.push({ x: cx + topHalf, y: top });
+
+  let area = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    area += a.x * b.y - b.x * a.y;
+  }
+  glass = { cx, cy: (top + bot) / 2, top, bot, topHalf, botHalf, r, pts, area: Math.abs(area) / 2 };
+}
+
+function glassPath(c) {
+  const p = glass.pts;
+  c.beginPath();
+  for (let i = 0; i < p.length; i++) i ? c.lineTo(p[i].x, p[i].y) : c.moveTo(p[i].x, p[i].y);
+  c.closePath();
+}
+
+function inGlass(x, y) {
+  const p = glass.pts;
+  let inside = false;
+  for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
+    if ((p[i].y > y) !== (p[j].y > y) &&
+        x < (p[j].x - p[i].x) * (y - p[i].y) / (p[j].y - p[i].y) + p[i].x) inside = !inside;
+  }
+  return inside;
+}
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 3);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  buildGlass();
+}
+
+/* ── orientation ── */
+/* Unit gravity vector in the *screen* frame: x right, y up, z out of the glass.
+   Upright portrait is (0,-1,0). Derived from deviceorientation beta/gamma.
+   Sensors report at wildly different rates, so events only set the target and
+   all smoothing happens per frame. */
+let tgx = 0, tgy = -1, tgz = 0;      // target (raw)
+let gx = 0, gy = -1, gz = 0;         // smoothed
+let hasSensor = false;
+let tilt = 0;          // deg between screen-up and world-up: 0 = upright, 90 = flat/sideways
+let downX = 0, downY = 1;  // world "down" projected into the screen plane (unit)
+let lastDownAngle = 0, spinRate = 0;
+
+/* manual tilt for desktop / no-sensor devices */
+let mRoll = 0, mPitch = 0;
+
+function onOrient(e) {
+  if (e.beta === null && e.gamma === null) return;
+  hasSensor = true;
+  const b = (e.beta  || 0) * Math.PI / 180;
+  const g = (e.gamma || 0) * Math.PI / 180;
+  // gravity in device coordinates
+  const x =  Math.sin(g) * Math.cos(b);
+  const y = -Math.sin(b);
+  const z = -Math.cos(g) * Math.cos(b);
+  // rotate the in-plane part into the screen frame when the display is rotated
+  const a = -screenAngle() * Math.PI / 180;
+  const ca = Math.cos(a), sa = Math.sin(a);
+  tgx = x * ca - y * sa;
+  tgy = x * sa + y * ca;
+  tgz = z;
+}
+
+function screenAngle() {
+  if (screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
+  return window.orientation || 0;
+}
+
+function updateOrientation(dt) {
+  if (!hasSensor) {
+    // synthetic gravity from the manual roll / pitch angles
+    const r = mRoll * Math.PI / 180, p = mPitch * Math.PI / 180;
+    tgx =  Math.sin(r);
+    tgy = -Math.cos(r) * Math.cos(p);
+    tgz = -Math.cos(r) * Math.sin(p);
+  }
+  const k = 1 - Math.exp(-dt / GRAV_TAU);
+  gx += (tgx - gx) * k;
+  gy += (tgy - gy) * k;
+  gz += (tgz - gz) * k;
+
+  const m = Math.hypot(gx, gy, gz) || 1;
+  const ny = gy / m;
+  tilt = Math.acos(Math.max(-1, Math.min(1, -ny))) * 180 / Math.PI;
+
+  // world-down inside the screen plane (canvas y grows downward)
+  let dx = gx, dy = -gy;
+  const dm = Math.hypot(dx, dy);
+  if (dm > 1e-4) { dx /= dm; dy /= dm; } else { dx = 0; dy = 1; }
+  const kd = 1 - Math.exp(-dt / DOWN_TAU);
+  downX += (dx - downX) * kd;
+  downY += (dy - downY) * kd;
+  const nm = Math.hypot(downX, downY) || 1;
+  downX /= nm; downY /= nm;
+
+  const ang = Math.atan2(downX, downY);
+  let d = ang - lastDownAngle;
+  while (d >  Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  lastDownAngle = ang;
+  spinRate = dt > 0 ? d / dt : 0;
+}
+
+/* ── liquid frame ─────────────────────────────────────────────
+   (u,v) is the glass rotated so +v points along world-down, with the
+   origin at the glass centre. The surface is a horizontal line v = vs. */
+let uvPts = [], vMin = 0, vMax = 0, uMin = 0, uMax = 0;
+
+function toU(x, y) { return (x - glass.cx) * downY - (y - glass.cy) * downX; }
+function toV(x, y) { return (x - glass.cx) * downX + (y - glass.cy) * downY; }
+function fromUV(u, v) {
+  return { x: glass.cx + u * downY + v * downX, y: glass.cy - u * downX + v * downY };
+}
+
+function projectGlass() {
+  uvPts.length = 0;
+  vMin = Infinity; vMax = -Infinity; uMin = Infinity; uMax = -Infinity;
+  for (const p of glass.pts) {
+    const u = toU(p.x, p.y), v = toV(p.x, p.y);
+    uvPts.push({ u, v });
+    if (v < vMin) vMin = v;
+    if (v > vMax) vMax = v;
+    if (u < uMin) uMin = u;
+    if (u > uMax) uMax = u;
+  }
+}
+
+/* area of the glass lying below (v >= vs) the surface line */
+function areaBelow(vs) {
+  const out = [];
+  for (let i = 0; i < uvPts.length; i++) {
+    const a = uvPts[i], b = uvPts[(i + 1) % uvPts.length];
+    const ain = a.v >= vs, bin = b.v >= vs;
+    if (ain) out.push(a);
+    if (ain !== bin) {
+      const t = (vs - a.v) / (b.v - a.v);
+      out.push({ u: a.u + t * (b.u - a.u), v: vs });
+    }
+  }
+  if (out.length < 3) return 0;
+  let s = 0;
+  for (let i = 0; i < out.length; i++) {
+    const a = out[i], b = out[(i + 1) % out.length];
+    s += a.u * b.v - b.u * a.v;
+  }
+  return Math.abs(s) / 2;
+}
+
+/* where the beer surface sits: a "full" glass still leaves room for the head */
+function surfaceV() { return levelToV(level * (1 - HEADROOM)); }
+
+/* surface height for a given fill fraction, so the liquid area stays honest */
+function levelToV(frac) {
+  if (frac >= 0.9995) return vMin;
+  if (frac <= 0.0005) return vMax;
+  const target = glass.area * frac;
+  let lo = vMin, hi = vMax;
+  for (let i = 0; i < 22; i++) {
+    const mid = (lo + hi) / 2;
+    if (areaBelow(mid) > target) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+/* ── state ── */
+let level = 0;               // 0..1 fill fraction
+let state = 'empty';         // empty | filling | ready
+let pourRate = 0;            // level/s currently draining
+let peak = 0;                // highest level since the last fill
+let wetLevel = 0;            // lacing / wet glass mark left behind
+let slosh = 0, sloshVel = 0; // surface tilt spring (radians)
+let wave = 0, wavePhase = 0; // ripple amplitude
+let foamAmt = 0;             // 0..1 head thickness
+let tally = parseInt(localStorage.getItem('beer-count')) || 0;
+let started = false;         // true once the user has tapped POUR
+const bubbles = [];
+
+const hintEl  = document.getElementById('hint');
+const flashEl = document.getElementById('flash');
+const tallyEl = document.getElementById('tally-n');
+tallyEl.textContent = tally;
+
+function flash(msg) {
+  if (!started) return;
+  flashEl.textContent = msg;
+  flashEl.classList.add('show');
+  setTimeout(() => flashEl.classList.remove('show'), 900);
+}
+
+function updateLevel(dt) {
+  pourRate = 0;
+
+  if (state === 'empty') {
+    if (tilt <= FILL_TILT) { state = 'filling'; peak = 0; }
+  }
+
+  if (state === 'filling') {
+    if (tilt > FILL_STOP) {
+      state = level <= EMPTY_EPS ? 'empty' : 'ready';
+    } else {
+      level = Math.min(1, level + FILL_RATE * dt);
+      foamAmt = Math.min(1, foamAmt + dt * 1.7);
+      wave = Math.min(1, wave + dt * 1.1);
+      if (level >= 1) { state = 'ready'; flash('Cheers!'); }
+    }
+  }
+
+  if (state === 'ready') {
+    if (tilt >= DRAIN_TILT && level > 0) {
+      const f = Math.min(1, (tilt - DRAIN_TILT) / (DRAIN_TILT_MAX - DRAIN_TILT));
+      pourRate = DRAIN_RATE_MAX * Math.pow(f, DRAIN_CURVE) * (0.62 + 0.38 * level);
+      level = Math.max(0, level - pourRate * dt);
+    }
+    if (level <= EMPTY_EPS) {
+      level = 0;
+      state = 'empty';
+      if (peak >= 0.55) {
+        tally++;
+        localStorage.setItem('beer-count', tally);
+        tallyEl.textContent = tally;
+        flash('\u{1F37A}');
+        snd.burp();
+      }
+    }
+  }
+
+  peak = Math.max(peak, level);
+  wetLevel = Math.max(level, wetLevel - dt * 0.11);
+
+  // foam settles when the beer is at rest, froths up when it moves
+  const foamTarget = state === 'filling' ? 1 : (pourRate > 0.02 ? 0.6 : 0.26);
+  foamAmt += (foamTarget - foamAmt) * Math.min(1, dt * (foamAmt < foamTarget ? 4 : 0.9));
+  if (level <= 0) foamAmt = Math.max(0, foamAmt - dt * 0.8);
+
+  // surface slosh: a damped spring driven by how fast the glass is rotating.
+  // The drive is clamped so a violent flick tips the surface, not flips it.
+  const drive = Math.max(-6, Math.min(6, -spinRate)) * 7;
+  sloshVel += (-38 * slosh - 7.5 * sloshVel + drive) * dt;
+  sloshVel = Math.max(-3, Math.min(3, sloshVel));
+  slosh = Math.max(-SLOSH_MAX, Math.min(SLOSH_MAX, slosh + sloshVel * dt));
+
+  wave = Math.max(0, wave - dt * 0.7) + Math.min(0.6, Math.abs(spinRate) * 0.3 + pourRate * 0.5) * dt * 3;
+  wave = Math.min(1, wave);
+  wavePhase += dt * (2.6 + wave * 4);
+}
+
+/* ── bubbles ── */
+function spawnBubble(vs, big) {
+  for (let i = 0; i < 5; i++) {
+    const u = uMin + Math.random() * (uMax - uMin);
+    const v = vs + (0.06 + Math.random() * 0.94) * (vMax - vs);
+    const p = fromUV(u, v);
+    if (!inGlass(p.x, p.y)) continue;
+    const r = big ? 2.6 + Math.random() * 3.2 : 0.9 + Math.random() * 2.1;
+    bubbles.push({ x: p.x, y: p.y, r, sp: 22 + r * 11 + Math.random() * 14, w: Math.random() * 6.283, a: 0.25 + Math.random() * 0.45 });
+    return;
+  }
+}
+
+function updateBubbles(dt, vs) {
+  const rate = level > 0.02 ? 26 + pourRate * 120 : 0;
+  let n = rate * dt;
+  while (n > 0) {
+    if (Math.random() < Math.min(1, n) && bubbles.length < MAX_BUBBLES) spawnBubble(vs, Math.random() < pourRate * 1.2);
+    n -= 1;
+  }
+  for (let i = bubbles.length - 1; i >= 0; i--) {
+    const b = bubbles[i];
+    b.w += dt * 5;
+    const drift = Math.sin(b.w) * 9 * dt;
+    b.x += -downX * b.sp * dt + downY * drift;
+    b.y += -downY * b.sp * dt - downX * drift;
+    const v = toV(b.x, b.y);
+    if (v <= vs + b.r * 0.4 || !inGlass(b.x, b.y)) bubbles.splice(i, 1);
+  }
+}
+
+/* ── drawing ── */
+const FOAM_CELLS = [];
+for (let i = 0; i < 90; i++) {
+  FOAM_CELLS.push({ t: Math.random(), r: 0.16 + Math.random() * 0.5, d: Math.random(), a: 0.25 + Math.random() * 0.6, ph: Math.random() * 6.283 });
+}
+
+/* the beer surface: a line tilted by the slosh, with shallow ripples on top */
+function surfaceAt(u, vs) {
+  const w = wave * Math.min(9, (vMax - vMin) * 0.018);
+  return vs + slosh * u
+           + w * Math.sin(u * 0.026 + wavePhase)
+           + w * 0.45 * Math.sin(u * 0.058 - wavePhase * 1.6);
+}
+
+function drawBackdrop() {
+  const g = ctx.createRadialGradient(W / 2, H * 0.34, 10, W / 2, H * 0.42, Math.max(W, H) * 0.85);
+  g.addColorStop(0, '#3a2a1c');
+  g.addColorStop(0.55, '#241a12');
+  g.addColorStop(1, '#120c08');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawGlassBack() {
+  ctx.save();
+  glassPath(ctx);
+  const g = ctx.createLinearGradient(glass.cx - glass.topHalf, 0, glass.cx + glass.topHalf, 0);
+  g.addColorStop(0, 'rgba(255,255,255,0.09)');
+  g.addColorStop(0.4, 'rgba(255,255,255,0.03)');
+  g.addColorStop(1, 'rgba(255,255,255,0.07)');
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawLiquid(vs) {
+  const pad = 30;
+  const u0 = uMin - pad, u1 = uMax + pad;
+  const deep = vMax + 200;
+
+  ctx.save();
+  glassPath(ctx);
+  ctx.clip();
+  ctx.translate(glass.cx, glass.cy);
+  ctx.transform(downY, -downX, downX, downY, 0, 0);   // into (u,v) space
+
+  // wet glass / lacing left behind above the beer: fades out towards the top,
+  // so the band has no hard edge of its own
+  if (wetLevel > level + 0.004) {
+    const vw = levelToV(wetLevel * (1 - HEADROOM));
+    const a = Math.min(0.09, (wetLevel - level) * 0.4);
+    const wg = ctx.createLinearGradient(0, vw, 0, vs);
+    wg.addColorStop(0, 'rgba(255,236,196,0)');
+    wg.addColorStop(1, 'rgba(255,236,196,' + a.toFixed(3) + ')');
+    ctx.fillStyle = wg;
+    ctx.fillRect(u0, vw, u1 - u0, vs - vw);
+  }
+
+  if (level > 0) {
+    // body of the beer, surface first
+    const step = Math.max(4, (u1 - u0) / 90);
+    ctx.beginPath();
+    ctx.moveTo(u0, surfaceAt(u0, vs));
+    for (let u = u0 + step; u < u1; u += step) ctx.lineTo(u, surfaceAt(u, vs));
+    ctx.lineTo(u1, surfaceAt(u1, vs));
+    ctx.lineTo(u1, deep);
+    ctx.lineTo(u0, deep);
+    ctx.closePath();
+
+    const g = ctx.createLinearGradient(0, vs, 0, vMax);
+    g.addColorStop(0, '#ffe9a8');
+    g.addColorStop(0.16, '#ffcd52');
+    g.addColorStop(0.58, '#f8b52a');
+    g.addColorStop(1, '#e08f12');
+    ctx.fillStyle = g;
+    ctx.fill();
+
+    // light coming through the glass near the bottom
+    ctx.save();
+    ctx.clip();
+    const gl = ctx.createRadialGradient(0, vMax * 0.78, 4, 0, vMax * 0.78, (uMax - uMin) * 0.8);
+    gl.addColorStop(0, 'rgba(255,236,170,0.35)');
+    gl.addColorStop(1, 'rgba(255,236,170,0)');
+    ctx.fillStyle = gl;
+    ctx.fillRect(u0, vs, u1 - u0, deep - vs);
+    ctx.restore();
+
+    // bubbles (drawn in canvas space, so pop back out of the rotated frame)
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    glassPath(ctx);
+    ctx.clip();
+    for (const b of bubbles) {
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, 6.2832);
+      ctx.fillStyle = 'rgba(255,248,225,' + (b.a * 0.5).toFixed(3) + ')';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(b.x - b.r * 0.3, b.y - b.r * 0.3, b.r * 0.42, 0, 6.2832);
+      ctx.fillStyle = 'rgba(255,255,255,' + (b.a * 0.8).toFixed(3) + ')';
+      ctx.fill();
+    }
+    ctx.restore();   // back to (u,v) space, glass still clipped
+
+    // foam head riding the surface
+    const thick = (6 + foamAmt * 46) * Math.min(1, level * 14);
+    const step2 = Math.max(4, (u1 - u0) / 80);
+    ctx.beginPath();
+    ctx.moveTo(u0, surfaceAt(u0, vs) - thick);
+    for (let u = u0 + step2; u < u1; u += step2) {
+      const s = surfaceAt(u, vs);
+      ctx.lineTo(u, s - thick + Math.sin(u * 0.09 + wavePhase * 0.7) * thick * 0.16);
+    }
+    ctx.lineTo(u1, surfaceAt(u1, vs) - thick);
+    ctx.lineTo(u1, surfaceAt(u1, vs) + thick * 0.22);
+    for (let u = u1 - step2; u > u0; u -= step2) ctx.lineTo(u, surfaceAt(u, vs) + thick * 0.22);
+    ctx.closePath();
+    const fg = ctx.createLinearGradient(0, vs - thick, 0, vs + thick * 0.3);
+    fg.addColorStop(0, '#fffdf6');
+    fg.addColorStop(0.5, '#fff3d8');
+    fg.addColorStop(1, '#f4d8a0');
+    ctx.fillStyle = fg;
+    ctx.fill();
+
+    // foam texture
+    ctx.save();
+    ctx.clip();
+    for (const f of FOAM_CELLS) {
+      const u = u0 + f.t * (u1 - u0);
+      const s = surfaceAt(u, vs);
+      const rr = f.r * thick * 0.55;
+      ctx.beginPath();
+      ctx.arc(u + Math.sin(f.ph + wavePhase * 0.4) * 2, s - thick * (0.12 + f.d * 0.85), rr, 0, 6.2832);
+      ctx.fillStyle = f.d > 0.5
+        ? 'rgba(255,255,255,' + (f.a * 0.5).toFixed(3) + ')'
+        : 'rgba(212,176,116,' + (f.a * 0.35).toFixed(3) + ')';
+      ctx.fill();
+    }
+    ctx.restore();
+  } else if (foamAmt > 0.02) {
+    // last of the froth clinging to the bottom
+    ctx.fillStyle = 'rgba(255,247,225,' + (foamAmt * 0.35).toFixed(3) + ')';
+    ctx.fillRect(u0, vMax - 8 * foamAmt, u1 - u0, 20);
+  }
+
+  ctx.restore();
+}
+
+function drawGlassFront() {
+  const g = glass;
+
+  // inner shadow along the walls
+  ctx.save();
+  glassPath(ctx);
+  ctx.clip();
+  const sg = ctx.createLinearGradient(g.cx - g.topHalf, 0, g.cx + g.topHalf, 0);
+  sg.addColorStop(0, 'rgba(0,0,0,0.30)');
+  sg.addColorStop(0.13, 'rgba(0,0,0,0)');
+  sg.addColorStop(0.87, 'rgba(0,0,0,0)');
+  sg.addColorStop(1, 'rgba(0,0,0,0.30)');
+  ctx.fillStyle = sg;
+  ctx.fill();
+
+  // specular streaks
+  ctx.fillStyle = 'rgba(255,255,255,0.13)';
+  ctx.fillRect(g.cx - g.topHalf * 0.74, g.top, g.topHalf * 0.10, g.bot - g.top);
+  ctx.fillStyle = 'rgba(255,255,255,0.07)';
+  ctx.fillRect(g.cx - g.topHalf * 0.56, g.top, g.topHalf * 0.05, g.bot - g.top);
+  ctx.fillStyle = 'rgba(255,255,255,0.10)';
+  ctx.fillRect(g.cx + g.topHalf * 0.60, g.top, g.topHalf * 0.07, g.bot - g.top);
+  ctx.restore();
+
+  // glass walls
+  ctx.save();
+  ctx.lineJoin = 'round';
+  glassPath(ctx);
+  ctx.lineWidth = Math.max(5, W * 0.017);
+  ctx.strokeStyle = 'rgba(214,232,240,0.16)';
+  ctx.stroke();
+  ctx.lineWidth = Math.max(2, W * 0.006);
+  ctx.strokeStyle = 'rgba(238,250,255,0.42)';
+  ctx.stroke();
+  ctx.restore();
+
+  // rim
+  ctx.save();
+  ctx.lineWidth = Math.max(3, W * 0.011);
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.beginPath();
+  ctx.ellipse(g.cx, g.top, g.topHalf, Math.max(6, g.topHalf * 0.12), 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx.lineWidth = Math.max(1, W * 0.004);
+  ctx.beginPath();
+  ctx.ellipse(g.cx, g.top + Math.max(6, g.topHalf * 0.12) * 0.55, g.topHalf * 0.92, Math.max(4, g.topHalf * 0.07), 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+
+  // base
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.20)';
+  ctx.lineWidth = Math.max(2, W * 0.005);
+  ctx.beginPath();
+  ctx.ellipse(g.cx, g.bot - 2, g.botHalf * 0.92, Math.max(4, g.botHalf * 0.09), 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawBackdrop();
+  drawGlassBack();
+  drawLiquid(surfaceV());
+  drawGlassFront();
+}
+
+/* ── hint text ── */
+let lastHint = '';
+function updateHint() {
+  let t;
+  if (state === 'filling') t = 'Pouring…';
+  else if (state === 'empty') t = hasSensor ? 'Hold upright to fill' : 'Drag or use ← → ↑ ↓ to tilt';
+  else if (pourRate > 0.02) t = 'Glug glug glug…';
+  else t = hasSensor ? 'Tilt to drink' : 'Drag to tilt · tap to refill';
+  if (t !== lastHint) { hintEl.textContent = t; lastHint = t; }
+  hintEl.style.opacity = pourRate > 0.25 ? '0.35' : '1';
+}
+
+/* ── sound (all synthesised, no assets) ─────────────────────── */
+const snd = (() => {
+  let ac = null, master = null, noiseBuf = null;
+  let fizzSrc = null, fizzGain = null;
+  let pourSrc = null, pourGain = null, pourFilter = null;
+  let on = localStorage.getItem('beer-muted') !== '1';
+  let glugTimer = 0;
+
+  function ensure() {
+    if (ac) return true;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return false;
+    ac = new AC();
+    master = ac.createGain();
+    master.gain.value = on ? 0.9 : 0;
+    master.connect(ac.destination);
+
+    const len = Math.floor(ac.sampleRate * 2);
+    noiseBuf = ac.createBuffer(1, len, ac.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+
+    // continuous carbonation fizz
+    fizzGain = ac.createGain(); fizzGain.gain.value = 0;
+    const hp = ac.createBiquadFilter(); hp.type = 'bandpass'; hp.frequency.value = 5200; hp.Q.value = 0.6;
+    fizzSrc = ac.createBufferSource(); fizzSrc.buffer = noiseBuf; fizzSrc.loop = true;
+    fizzSrc.connect(hp); hp.connect(fizzGain); fizzGain.connect(master); fizzSrc.start();
+
+    // splashing while pouring / draining
+    pourGain = ac.createGain(); pourGain.gain.value = 0;
+    pourFilter = ac.createBiquadFilter(); pourFilter.type = 'bandpass'; pourFilter.frequency.value = 1100; pourFilter.Q.value = 0.9;
+    pourSrc = ac.createBufferSource(); pourSrc.buffer = noiseBuf; pourSrc.loop = true;
+    pourSrc.connect(pourFilter); pourFilter.connect(pourGain); pourGain.connect(master); pourSrc.start();
+    return true;
+  }
+
+  function ramp(node, v, t) {
+    if (!node) return;
+    node.gain.setTargetAtTime(v, ac.currentTime, t);
+  }
+
+  return {
+    start() { if (ensure() && ac.state === 'suspended') ac.resume(); },
+    get on() { return on; },
+    toggle() {
+      on = !on;
+      localStorage.setItem('beer-muted', on ? '0' : '1');
+      if (ac) master.gain.setTargetAtTime(on ? 0.9 : 0, ac.currentTime, 0.05);
+      return on;
+    },
+    frame(dt) {
+      if (!ac) return;
+      const filling = state === 'filling';
+      ramp(fizzGain, level > 0.02 ? 0.028 + level * 0.02 : 0, 0.25);
+      ramp(pourGain, filling ? 0.16 : (pourRate > 0.02 ? Math.min(0.14, pourRate * 0.3) : 0), 0.12);
+      if (pourFilter) pourFilter.frequency.setTargetAtTime(filling ? 900 + level * 900 : 1500, ac.currentTime, 0.2);
+
+      // glugs while drinking, faster the harder you tilt
+      if (pourRate > 0.03) {
+        glugTimer -= dt;
+        if (glugTimer <= 0) {
+          this.glug(Math.min(1, pourRate / DRAIN_RATE_MAX));
+          glugTimer = 0.42 - Math.min(0.3, pourRate * 0.5);
+        }
+      } else glugTimer = 0.05;
+    },
+    glug(strength) {
+      if (!ac || !on) return;
+      const t = ac.currentTime;
+      const o = ac.createOscillator();
+      const g = ac.createGain();
+      o.type = 'sine';
+      const f0 = 190 + Math.random() * 70;
+      o.frequency.setValueAtTime(f0, t);
+      o.frequency.exponentialRampToValueAtTime(f0 * 0.42, t + 0.11);
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.28 * (0.5 + strength * 0.5), t + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+      o.connect(g); g.connect(master);
+      o.start(t); o.stop(t + 0.18);
+      if (navigator.vibrate) navigator.vibrate(10);
+    },
+    burp() {
+      if (!ac || !on) return;
+      const t = ac.currentTime;
+      const o = ac.createOscillator();
+      const lfo = ac.createOscillator();
+      const lfoG = ac.createGain();
+      const lp = ac.createBiquadFilter();
+      const g = ac.createGain();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(105, t);
+      o.frequency.linearRampToValueAtTime(72, t + 0.5);
+      lfo.type = 'sine'; lfo.frequency.value = 21;
+      lfoG.gain.value = 34;
+      lfo.connect(lfoG); lfoG.connect(o.frequency);
+      lp.type = 'lowpass'; lp.frequency.value = 760; lp.Q.value = 3;
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.32, t + 0.05);
+      g.gain.setValueAtTime(0.30, t + 0.34);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.58);
+      o.connect(lp); lp.connect(g); g.connect(master);
+      o.start(t); lfo.start(t);
+      o.stop(t + 0.6); lfo.stop(t + 0.6);
+      if (navigator.vibrate) navigator.vibrate([20, 40, 60]);
+    }
+  };
+})();
+
+/* ── loop ── */
+let lastTime = 0;
+function loop(now) {
+  if (!lastTime) lastTime = now;
+  let dt = (now - lastTime) / 1000;
+  lastTime = now;
+  dt = Math.min(dt, 0.05);   // cap so a background tab can't dump a beer
+
+  updateOrientation(dt);
+  projectGlass();
+  updateLevel(dt);
+  const vs = surfaceV();
+  updateBubbles(dt, vs);
+  snd.frame(dt);
+  updateHint();
+  draw();
+
+  requestAnimationFrame(loop);
+}
+
+/* ── input ── */
+const overlay = document.getElementById('overlay');
+const olSub   = document.getElementById('ol-sub');
+const olBtn   = document.getElementById('ol-btn');
+const soundBtn = document.getElementById('sound-btn');
+
+soundBtn.textContent = snd.on ? '\u{1F50A}' : '\u{1F507}';
+soundBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  snd.start();
+  soundBtn.textContent = snd.toggle() ? '\u{1F50A}' : '\u{1F507}';
+});
+
+async function requestMotion() {
+  const D = window.DeviceOrientationEvent;
+  if (D && typeof D.requestPermission === 'function') {
+    try {
+      const res = await D.requestPermission();
+      if (res !== 'granted') return false;
+    } catch (_) { return false; }
+  }
+  window.addEventListener('deviceorientation', onOrient);
+  return true;
+}
+
+olBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  snd.start();
+  started = true;
+  await requestMotion();
+  overlay.classList.remove('show');
+  requestWakeLock();
+  // give the sensor a moment; if nothing arrives we fall back to dragging
+  setTimeout(() => {
+    if (!hasSensor) olSub.textContent = '';
+  }, 700);
+});
+
+/* drag / keys drive the tilt when there is no motion sensor */
+let dragging = false, dragX = 0, dragY = 0, dragR = 0, dragP = 0, moved = 0, downT = 0;
+
+canvas.addEventListener('pointerdown', (e) => {
+  dragging = true; moved = 0; downT = performance.now();
+  dragX = e.clientX; dragY = e.clientY; dragR = mRoll; dragP = mPitch;
+  canvas.setPointerCapture?.(e.pointerId);
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  const ddx = e.clientX - dragX, ddy = e.clientY - dragY;
+  moved = Math.max(moved, Math.hypot(ddx, ddy));
+  if (hasSensor) return;
+  mRoll  = Math.max(-90, Math.min(90, dragR + ddx * (110 / W)));
+  mPitch = Math.max(-110, Math.min(110, dragP + ddy * (150 / H)));
+});
+canvas.addEventListener('pointerup', () => {
+  dragging = false;
+  if (moved < 10 && performance.now() - downT < 400) topUp();
+});
+canvas.addEventListener('pointercancel', () => { dragging = false; });
+
+function topUp() {
+  snd.start();
+  if (state === 'ready' && level < 0.999) state = 'filling';
+  else if (state === 'empty') { state = 'filling'; peak = 0; }
+}
+
+document.addEventListener('keydown', (e) => {
+  const k = e.key;
+  if (k === 'ArrowLeft')  { mRoll  = Math.max(-90, mRoll - 6);  e.preventDefault(); }
+  if (k === 'ArrowRight') { mRoll  = Math.min(90, mRoll + 6);   e.preventDefault(); }
+  if (k === 'ArrowUp')    { mPitch = Math.max(-110, mPitch - 8); e.preventDefault(); }
+  if (k === 'ArrowDown')  { mPitch = Math.min(110, mPitch + 8);  e.preventDefault(); }
+  if (k === '0' || k === 'r' || k === 'R') { mRoll = 0; mPitch = 0; }
+  if (k === ' ') { topUp(); e.preventDefault(); }
+  if (k === 'm' || k === 'M') { snd.start(); soundBtn.textContent = snd.toggle() ? '\u{1F50A}' : '\u{1F507}'; }
+});
+
+/* keep the screen awake while you nurse your pint */
+let wakeLock = null;
+async function requestWakeLock() {
+  try {
+    if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
+  } catch (_) { /* not available */ }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') { lastTime = 0; requestWakeLock(); }
+});
+
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+
+/* ── service worker ── */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+
+/* ── start ── */
+resize();
+projectGlass();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

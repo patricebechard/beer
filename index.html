@@ -36,7 +36,7 @@ canvas { display:block; position:absolute; inset:0; }
    the top of #app -- so take whichever inset is currently reporting it. */
 #hud {
   position:absolute; top:0; left:0; right:0;
-  display:flex; align-items:center; justify-content:space-between;
+  display:flex; align-items:center; justify-content:flex-end;
   padding:calc(max(env(safe-area-inset-top), env(safe-area-inset-left), env(safe-area-inset-right)) + 10px) 14px 0;
   z-index:5; pointer-events:none;
 }
@@ -47,14 +47,7 @@ canvas { display:block; position:absolute; inset:0; }
   color:#fff; cursor:pointer; backdrop-filter:blur(4px);
 }
 .icon-btn:active { transform:scale(0.93); }
-.hud-right { display:flex; align-items:center; gap:8px; }
-#tally {
-  background:rgba(0,0,0,0.28); border-radius:999px;
-  padding:8px 14px; font-size:15px; font-weight:700;
-  color:rgba(255,255,255,0.9); backdrop-filter:blur(4px);
-  letter-spacing:0.5px;
-}
-.badge-btn { padding:5px; display:flex; align-items:center; justify-content:center; }
+.badge-btn { padding:0; display:flex; align-items:center; justify-content:center; }
 
 /* ── drink picker ── */
 #menu {
@@ -65,7 +58,9 @@ canvas { display:block; position:absolute; inset:0; }
 }
 #menu.show { opacity:1; pointer-events:auto; }
 #menu-card {
-  width:min(340px, calc(100% - 36px));
+  width:min(366px, calc(100% - 28px));
+  max-height:calc(100% - 32px); overflow-y:auto; touch-action:pan-y;
+  -webkit-overflow-scrolling:touch;
   background:#221710; border:1px solid rgba(255,255,255,0.10);
   border-radius:18px; padding:8px; overflow:hidden;
   box-shadow:0 18px 50px rgba(0,0,0,0.6);
@@ -78,14 +73,20 @@ canvas { display:block; position:absolute; inset:0; }
   padding:12px 14px 10px;
 }
 .drink-row {
-  display:flex; align-items:center; gap:13px; width:100%;
+  display:flex; align-items:flex-start; gap:13px; width:100%;
   background:none; border:none; border-radius:12px;
   padding:11px 12px; cursor:pointer; text-align:left;
   font-family:inherit; color:#fff;
 }
 .drink-row:active { background:rgba(255,255,255,0.09); }
 .drink-row.on { background:rgba(255,255,255,0.07); }
-.drink-row .badge { width:34px; height:34px; flex:none; }
+.tile {
+  display:block; border-radius:9px; overflow:hidden; flex:none;
+  box-shadow:0 1px 3px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(255,255,255,0.12);
+}
+.tile img { display:block; width:100%; height:100%; object-fit:contain; padding:11%; }
+.drink-row .tile { width:42px; height:42px; margin-top:1px; }
+#menu-btn .tile { width:30px; height:30px; border-radius:7px; }
 .drink-row .txt { flex:1; min-width:0; }
 .drink-row .nm {
   display:block; font-size:16px; font-weight:700; letter-spacing:0.2px;
@@ -96,7 +97,11 @@ canvas { display:block; position:absolute; inset:0; }
   color:rgba(255,255,255,0.48);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
-.drink-row .tick { flex:none; width:18px; font-size:15px; color:#ffc247; opacity:0; }
+.drink-row .bl {
+  display:block; font-size:11.5px; font-weight:500; line-height:1.4;
+  margin-top:5px; color:rgba(255,255,255,0.40); white-space:normal;
+}
+.drink-row .tick { flex:none; width:18px; font-size:15px; color:#ffc247; opacity:0; padding-top:3px; }
 .drink-row.on .tick { opacity:1; }
 /* the hint and flash sit on top of the beer now, so both get a dark pill to
    stay legible against gold */
@@ -151,11 +156,7 @@ canvas { display:block; position:absolute; inset:0; }
   <canvas id="c"></canvas>
 
   <div id="hud">
-    <button id="sound-btn" class="icon-btn" title="Sound">&#128266;</button>
-    <div class="hud-right">
-      <div id="tally">&#127866; <span id="tally-n">0</span></div>
-      <button id="menu-btn" class="icon-btn badge-btn" title="Choose your drink"></button>
-    </div>
+    <button id="menu-btn" class="icon-btn badge-btn" title="Choose your drink"></button>
   </div>
 
   <div id="menu">
@@ -202,11 +203,17 @@ const MAX_BUBBLES    = 150;
    alpha    liquid opacity -- below 1 you can see through it
    haze     milky wash over the liquid, for unfiltered beers
    fizz     carbonation: bubble count, bubble brightness, hiss volume
-   accent   the drink's colour, used for its badge ring
-   The badges are drawn from these numbers rather than being brand artwork. */
+   blurb    a line about the drink, shown in the picker
+   logo     brand art, drawn in front of the beer as if printed on the glass
+   tile     backing colour behind that logo in the picker
+   glow     halo under the logo: 'light' for dark art, 'dark' for light art
+   accent   the drink's colour, used for the picker's selected row
+*/
 const DRINKS = [
   {
     id: 'michelob', name: 'Michelob Ultra', style: 'Light lager',
+    blurb: 'Crisp, light and cheerfully inoffensive. Brewed to vanish between sips, which is rather the point.',
+    logo: 'logo-michelob.png', tile: '#ffffff', glow: 'light',
     grad: ['#fff7dc', '#ffe68e', '#f9d15c', '#eeb93e'],
     foam: ['#ffffff', '#fffaf0', '#f0e2c6'],
     head: 0.050, alpha: 1, haze: 0,
@@ -215,6 +222,8 @@ const DRINKS = [
   },
   {
     id: 'pliny', name: 'Pliny the Elder', style: 'West Coast IPA',
+    blurb: 'The double IPA that set the standard: bone dry, resinous, piney. Russian River tell you not to age it, so don\'t.',
+    logo: 'logo-pliny.png',    tile: '#474d14', glow: 'dark',
     grad: ['#ffe7a6', '#ffc247', '#f0a01c', '#d4820e'],
     foam: ['#fffdf6', '#fff3d8', '#f2d69c'],
     head: 0.062, alpha: 0.84, haze: 0,          // brilliantly clear, see-through
@@ -223,6 +232,8 @@ const DRINKS = [
   },
   {
     id: 'hypa', name: 'HYPA', style: 'Hazy IPA · Bas-Canada',
+    blurb: 'The brewery\'s first big run of IPAs. Leaning hard on the New England style, it\'s an excuse to find out what each hop variety actually smells like.',
+    logo: 'logo-hypa.png',     tile: '#ffffff', glow: 'light',
     grad: ['#ffe2b6', '#ffc379', '#f3a252', '#dd8438'],
     foam: ['#fffefb', '#fdf4e4', '#eddcbe'],
     head: 0.088, alpha: 1, haze: 0.55,          // opaque, unfiltered murk
@@ -231,6 +242,8 @@ const DRINKS = [
   },
   {
     id: 'guinness', name: 'Guinness', style: 'Irish dry stout',
+    blurb: 'Nitrogen-poured since 1759. Roasted barley, a collar you could stand a coin on, and it drinks lighter than it looks.',
+    logo: 'logo-guinness.png', tile: '#0a0a0a', glow: 'dark',
     grad: ['#63290f', '#2c1006', '#170803', '#0b0301'],
     foam: ['#fff8ec', '#f1e0c2', '#d6bd95'],
     head: 0.100, alpha: 1, haze: 0,             // thick creamy collar
@@ -239,6 +252,8 @@ const DRINKS = [
   },
   {
     id: 'caesar', name: 'Clamato Caesar', style: 'Not a beer. Still a drink.',
+    blurb: 'Tomato, clam broth, vodka and far too much celery salt. Canada\'s national cocktail, and nobody else\'s.',
+    logo: 'logo-caesar.png',   tile: '#ffffff', glow: 'dark',
     grad: ['#f2724a', '#dc4823', '#b52d13', '#8b1e0b'],
     foam: ['#ffd7c2', '#f7bb9e', '#e39a78'],
     head: 0.022, alpha: 1, haze: 0.30,          // barely a froth
@@ -254,17 +269,19 @@ function rgba(hex, a) {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a.toFixed(3)})`;
 }
 
-/* a little glass-of-something emblem built from the drink's own colours */
-function badgeSVG(d) {
-  return `<svg viewBox="0 0 24 24" width="100%" height="100%" aria-hidden="true">
-    <defs><clipPath id="cp-${d.id}"><circle cx="12" cy="12" r="9.4"/></clipPath></defs>
-    <g clip-path="url(#cp-${d.id})">
-      <rect x="0" y="0" width="24" height="24" fill="${d.grad[2]}"/>
-      <rect x="0" y="12" width="24" height="12" fill="${d.grad[3]}"/>
-      <rect x="0" y="2.6" width="24" height="${(3.2 + d.head * 34).toFixed(2)}" fill="${d.foam[1]}"/>
-    </g>
-    <circle cx="12" cy="12" r="9.4" fill="none" stroke="${d.accent}" stroke-width="2.4"/>
-  </svg>`;
+/* the logos are also the picker's tiles: square, rounded, on a brand backing */
+function badgeHTML(d) {
+  return `<span class="tile" style="background:${d.tile}">`
+       + `<img src="${d.logo}" alt="" draggable="false"></span>`;
+}
+
+/* preloaded so the first frame after a switch already has the art */
+const logoImgs = {};
+for (const d of DRINKS) {
+  const im = new Image();
+  im.decoding = 'async';
+  im.src = d.logo;
+  logoImgs[d.id] = im;
 }
 
 /* ── canvas ── */
@@ -510,19 +527,15 @@ function levelToV(frac) {
 let level = 0;               // 0..1 fill fraction
 let state = 'empty';         // empty | filling | ready
 let pourRate = 0;            // level/s currently draining
-let peak = 0;                // highest level since the last fill
 let wetLevel = 0;            // lacing / wet glass mark left behind
 let slosh = 0, sloshVel = 0; // surface tilt spring (radians)
 let wave = 0, wavePhase = 0; // ripple amplitude
 let foamAmt = 0;             // 0..1 head thickness
-let tally = parseInt(localStorage.getItem('beer-count')) || 0;
 let started = false;         // true once the user has tapped POUR
 const bubbles = [];
 
 const hintEl  = document.getElementById('hint');
 const flashEl = document.getElementById('flash');
-const tallyEl = document.getElementById('tally-n');
-tallyEl.textContent = tally;
 
 function flash(msg, small) {
   if (!started) return;
@@ -536,7 +549,7 @@ function updateLevel(dt) {
   pourRate = 0;
 
   if (state === 'empty') {
-    if (tilt <= FILL_TILT) { state = 'filling'; peak = 0; }
+    if (tilt <= FILL_TILT) state = 'filling';
   }
 
   if (state === 'filling') {
@@ -564,17 +577,9 @@ function updateLevel(dt) {
     if (level <= EMPTY_EPS) {
       level = 0;
       state = 'empty';
-      if (peak >= 0.55) {
-        tally++;
-        localStorage.setItem('beer-count', tally);
-        tallyEl.textContent = tally;
-        flash('\u{1F37A}');
-        snd.burp();
-      }
     }
   }
 
-  peak = Math.max(peak, level);
   wetLevel = Math.max(level, wetLevel - dt * 0.11);
 
   // foam settles when the beer is at rest, froths up when it moves
@@ -773,10 +778,58 @@ function drawLiquid(vs) {
   ctx.restore();
 }
 
+/* ── the phone as the glass ────────────────────────────────────
+   The brand art is printed on the side of the glass, so it sits in front of
+   the beer and stays put no matter what the liquid does. A halo under it
+   keeps dark art legible over the dark empty screen and light art legible
+   over pale beer. */
+function drawLogo() {
+  const im = logoImgs[drink.id];
+  if (!im || !im.complete || !im.naturalWidth) return;
+  const s = Math.min(W * 0.62 / im.naturalWidth, H * 0.23 / im.naturalHeight);
+  const w = im.naturalWidth * s, h = im.naturalHeight * s;
+  const x = (W - w) / 2, y = H * 0.30 - h / 2;
+
+  ctx.save();
+  ctx.globalAlpha = 0.94;
+  ctx.shadowColor = drink.glow === 'light' ? 'rgba(255,251,240,0.85)' : 'rgba(0,0,0,0.45)';
+  ctx.shadowBlur = Math.max(9, W * (drink.glow === 'light' ? 0.045 : 0.028));
+  ctx.drawImage(im, x, y, w, h);          // lays down the halo
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.drawImage(im, x, y, w, h);          // crisp print on top
+  ctx.restore();
+}
+
+/* light raking across the glass, plus the thicker glass at the edges */
+function drawGlassSheen() {
+  const hi = ctx.createLinearGradient(0, 0, W, 0);
+  hi.addColorStop(0.00, 'rgba(255,255,255,0.10)');
+  hi.addColorStop(0.06, 'rgba(255,255,255,0.02)');
+  hi.addColorStop(0.13, 'rgba(255,255,255,0.15)');
+  hi.addColorStop(0.19, 'rgba(255,255,255,0.02)');
+  hi.addColorStop(0.50, 'rgba(255,255,255,0.00)');
+  hi.addColorStop(0.79, 'rgba(255,255,255,0.08)');
+  hi.addColorStop(0.87, 'rgba(255,255,255,0.02)');
+  hi.addColorStop(1.00, 'rgba(255,255,255,0.11)');
+  ctx.fillStyle = hi;
+  ctx.fillRect(0, 0, W, H);
+
+  const edge = ctx.createLinearGradient(0, 0, W, 0);
+  edge.addColorStop(0.00, 'rgba(0,0,0,0.24)');
+  edge.addColorStop(0.05, 'rgba(0,0,0,0)');
+  edge.addColorStop(0.95, 'rgba(0,0,0,0)');
+  edge.addColorStop(1.00, 'rgba(0,0,0,0.24)');
+  ctx.fillStyle = edge;
+  ctx.fillRect(0, 0, W, H);
+}
+
 function draw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   drawBackdrop();
   drawLiquid(surfaceV());
+  drawLogo();
+  drawGlassSheen();
 }
 
 /* ── hint text ── */
@@ -790,115 +843,6 @@ function updateHint() {
   if (t !== lastHint) { hintEl.textContent = t; lastHint = t; }
   hintEl.style.opacity = pourRate > 0.25 ? '0.35' : '1';
 }
-
-/* ── sound (all synthesised, no assets) ─────────────────────── */
-const snd = (() => {
-  let ac = null, master = null, noiseBuf = null;
-  let fizzSrc = null, fizzGain = null;
-  let pourSrc = null, pourGain = null, pourFilter = null;
-  let on = localStorage.getItem('beer-muted') !== '1';
-  let glugTimer = 0;
-
-  function ensure() {
-    if (ac) return true;
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return false;
-    ac = new AC();
-    master = ac.createGain();
-    master.gain.value = on ? 0.9 : 0;
-    master.connect(ac.destination);
-
-    const len = Math.floor(ac.sampleRate * 2);
-    noiseBuf = ac.createBuffer(1, len, ac.sampleRate);
-    const d = noiseBuf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-
-    // continuous carbonation fizz
-    fizzGain = ac.createGain(); fizzGain.gain.value = 0;
-    const hp = ac.createBiquadFilter(); hp.type = 'bandpass'; hp.frequency.value = 5200; hp.Q.value = 0.6;
-    fizzSrc = ac.createBufferSource(); fizzSrc.buffer = noiseBuf; fizzSrc.loop = true;
-    fizzSrc.connect(hp); hp.connect(fizzGain); fizzGain.connect(master); fizzSrc.start();
-
-    // splashing while pouring / draining
-    pourGain = ac.createGain(); pourGain.gain.value = 0;
-    pourFilter = ac.createBiquadFilter(); pourFilter.type = 'bandpass'; pourFilter.frequency.value = 1100; pourFilter.Q.value = 0.9;
-    pourSrc = ac.createBufferSource(); pourSrc.buffer = noiseBuf; pourSrc.loop = true;
-    pourSrc.connect(pourFilter); pourFilter.connect(pourGain); pourGain.connect(master); pourSrc.start();
-    return true;
-  }
-
-  function ramp(node, v, t) {
-    if (!node) return;
-    node.gain.setTargetAtTime(v, ac.currentTime, t);
-  }
-
-  return {
-    start() { if (ensure() && ac.state === 'suspended') ac.resume(); },
-    get on() { return on; },
-    toggle() {
-      on = !on;
-      localStorage.setItem('beer-muted', on ? '0' : '1');
-      if (ac) master.gain.setTargetAtTime(on ? 0.9 : 0, ac.currentTime, 0.05);
-      return on;
-    },
-    frame(dt) {
-      if (!ac) return;
-      const filling = state === 'filling';
-      ramp(fizzGain, level > 0.02 ? (0.028 + level * 0.02) * drink.fizz : 0, 0.25);
-      ramp(pourGain, filling ? 0.16 : (pourRate > 0.02 ? Math.min(0.14, pourRate * 0.3) : 0), 0.12);
-      if (pourFilter) pourFilter.frequency.setTargetAtTime(filling ? 900 + level * 900 : 1500, ac.currentTime, 0.2);
-
-      // glugs while drinking, faster the harder you tilt
-      if (pourRate > 0.03) {
-        glugTimer -= dt;
-        if (glugTimer <= 0) {
-          this.glug(Math.min(1, pourRate / DRAIN_RATE_MAX));
-          glugTimer = 0.42 - Math.min(0.3, pourRate * 0.5);
-        }
-      } else glugTimer = 0.05;
-    },
-    glug(strength) {
-      if (!ac || !on) return;
-      const t = ac.currentTime;
-      const o = ac.createOscillator();
-      const g = ac.createGain();
-      o.type = 'sine';
-      const f0 = 190 + Math.random() * 70;
-      o.frequency.setValueAtTime(f0, t);
-      o.frequency.exponentialRampToValueAtTime(f0 * 0.42, t + 0.11);
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(0.28 * (0.5 + strength * 0.5), t + 0.012);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
-      o.connect(g); g.connect(master);
-      o.start(t); o.stop(t + 0.18);
-      if (navigator.vibrate) navigator.vibrate(10);
-    },
-    burp() {
-      if (!ac || !on) return;
-      const t = ac.currentTime;
-      const o = ac.createOscillator();
-      const lfo = ac.createOscillator();
-      const lfoG = ac.createGain();
-      const lp = ac.createBiquadFilter();
-      const g = ac.createGain();
-      o.type = 'sawtooth';
-      o.frequency.setValueAtTime(105, t);
-      o.frequency.linearRampToValueAtTime(72, t + 0.5);
-      lfo.type = 'sine'; lfo.frequency.value = 21;
-      lfoG.gain.value = 34;
-      lfo.connect(lfoG); lfoG.connect(o.frequency);
-      lp.type = 'lowpass'; lp.frequency.value = 760; lp.Q.value = 3;
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(0.32, t + 0.05);
-      g.gain.setValueAtTime(0.30, t + 0.34);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.58);
-      o.connect(lp); lp.connect(g); g.connect(master);
-      o.start(t); lfo.start(t);
-      o.stop(t + 0.6); lfo.stop(t + 0.6);
-      if (navigator.vibrate) navigator.vibrate([20, 40, 60]);
-    }
-  };
-})();
 
 /* ── loop ── */
 let lastTime = 0;
@@ -914,7 +858,6 @@ function loop(now) {
   updateLevel(dt);
   const vs = surfaceV();
   updateBubbles(dt, vs);
-  snd.frame(dt);
   updateHint();
   draw();
 
@@ -925,15 +868,6 @@ function loop(now) {
 const overlay = document.getElementById('overlay');
 const olSub   = document.getElementById('ol-sub');
 const olBtn   = document.getElementById('ol-btn');
-const soundBtn = document.getElementById('sound-btn');
-
-soundBtn.textContent = snd.on ? '\u{1F50A}' : '\u{1F507}';
-soundBtn.addEventListener('click', (e) => {
-  e.stopPropagation();
-  snd.start();
-  soundBtn.textContent = snd.toggle() ? '\u{1F50A}' : '\u{1F507}';
-});
-
 /* ── drink picker ── */
 const menu    = document.getElementById('menu');
 const menuBtn = document.getElementById('menu-btn');
@@ -943,17 +877,18 @@ for (const d of DRINKS) {
   const row = document.createElement('button');
   row.className = 'drink-row';
   row.dataset.id = d.id;
-  row.innerHTML = `<span class="badge">${badgeSVG(d)}</span>`
-    + `<span class="txt"><span class="nm"></span><span class="st"></span></span>`
+  row.innerHTML = badgeHTML(d)
+    + `<span class="txt"><span class="nm"></span><span class="st"></span><span class="bl"></span></span>`
     + `<span class="tick">✓</span>`;
   row.querySelector('.nm').textContent = d.name;
   row.querySelector('.st').textContent = d.style;
+  row.querySelector('.bl').textContent = d.blurb;
   row.addEventListener('click', (e) => { e.stopPropagation(); pick(d); });
   menuList.appendChild(row);
 }
 
 function markDrink() {
-  menuBtn.innerHTML = badgeSVG(drink);
+  menuBtn.innerHTML = badgeHTML(drink);
   menuBtn.title = drink.name;
   for (const row of menuList.children) row.classList.toggle('on', row.dataset.id === drink.id);
 }
@@ -966,7 +901,7 @@ function pick(d) {
   flash(d.name, true);
 }
 
-function openMenu()  { snd.start(); menu.classList.add('show'); }
+function openMenu()  { menu.classList.add('show'); }
 function closeMenu() { menu.classList.remove('show'); }
 
 menuBtn.addEventListener('click', (e) => { e.stopPropagation(); openMenu(); });
@@ -994,7 +929,6 @@ function tryOrientationLock() {
 
 olBtn.addEventListener('click', async (e) => {
   e.stopPropagation();
-  snd.start();
   started = true;
   await requestMotion();
   overlay.classList.remove('show');
@@ -1029,9 +963,8 @@ canvas.addEventListener('pointerup', () => {
 canvas.addEventListener('pointercancel', () => { dragging = false; });
 
 function topUp() {
-  snd.start();
   if (state === 'ready' && level < 0.999) state = 'filling';
-  else if (state === 'empty') { state = 'filling'; peak = 0; }
+  else if (state === 'empty') state = 'filling';
 }
 
 document.addEventListener('keydown', (e) => {
@@ -1042,7 +975,6 @@ document.addEventListener('keydown', (e) => {
   if (k === 'ArrowDown')  { mPitch = Math.min(110, mPitch + 8);  e.preventDefault(); }
   if (k === '0' || k === 'r' || k === 'R') { mRoll = 0; mPitch = 0; }
   if (k === ' ') { topUp(); e.preventDefault(); }
-  if (k === 'm' || k === 'M') { snd.start(); soundBtn.textContent = snd.toggle() ? '\u{1F50A}' : '\u{1F507}'; }
   if (k === 'Escape') closeMenu();
   if (k === 'b' || k === 'B') pick(DRINKS[(DRINKS.indexOf(drink) + 1) % DRINKS.length]);
 });

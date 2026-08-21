@@ -9,16 +9,13 @@ A pint of lager that lives in your phone — the old iBeer trick, rebuilt as a w
 - **Tilt to drink** — the pour rate scales with how far you tip the phone, from a slow sip at 25° to chugging it flat out in a couple of seconds
 - **It only spills what clears the rim** — tilt a half-full screen and nothing leaves; the beer runs out only once the surface actually reaches the lip, so you have to keep tipping further to finish it
 - **Hold upright to fill** — an empty glass refills whenever you bring the phone back to vertical
-- **Five things on tap** — Michelob Ultra, Pliny the Elder, HYPA, Guinness and a Clamato Caesar, each with its own colour, clarity, head and fizz; tap the badge in the corner to switch
-- **The screen is the glass** — no vessel drawn around it; the beer runs to all four edges
+- **Five things on tap** — Michelob Ultra, Pliny the Elder, HYPA, Guinness and a Clamato Caesar, each with its own colour, clarity, head and carbonation, and a line about what you're drinking; tap the logo in the corner to switch
+- **Your phone is the glass** — no vessel drawn around it: the beer runs to all four edges, the brand logo is printed on the front in front of the liquid, and light rakes down the sides
 - **Real liquid surface** — the beer stays level with the actual horizon no matter how you hold the phone, and the volume is conserved exactly as the surface tilts
 - **No screen flipping** — tilting sideways is exactly the motion that makes a phone rotate to landscape, so the app cancels the rotation out and stays glued to the phone
 - **Foam head** — builds while you pour, froths up when you drink, then settles
 - **Sloshing** — a damped spring tips and ripples the surface when you move the glass
 - **Carbonation** — bubbles rise against real gravity and pop into the head
-- **Synthesised sound** — glugs, fizz and a closing burp, all generated with the Web Audio API; there isn't an audio file in the repo
-- **Haptics** — a tap per glug on devices that support vibration
-- **Beers counted** — every pint you finish is tallied and saved
 - **Stays awake** — holds a screen wake lock so the display doesn't sleep mid-pint
 - **Works on a laptop** — with no motion sensor, drag or use the arrow keys to tilt the glass
 - **Offline support** — works without an internet connection after first load
@@ -34,7 +31,6 @@ A pint of lager that lives in your phone — the old iBeer trick, rebuilt as a w
 | Drag / arrow keys | Tilt, when there's no motion sensor |
 | `R` or `0` | Level it out |
 | `Space` | Top it up |
-| `M` | Mute |
 | Badge, top right | Pick your drink |
 | `B` | Next drink |
 | `Esc` | Close the menu |
@@ -57,9 +53,17 @@ Then open `http://localhost:8080` in your browser. Motion sensors need HTTPS (or
 
 The app will appear as a standalone app on your home screen.
 
+## Trademarks
+
+The drink names and logos are the trademarks of their respective owners, used
+here only to identify what you are pretending to drink. This is a personal
+project with no affiliation to, or endorsement from, any of them.
+
 ## Notes
 
-The icons are generated, not drawn — run `python3 make_icons.py` to rebuild them. The drink badges in the menu are likewise drawn from each drink's own palette rather than being brand artwork.
+The app icons are generated, not drawn — run `python3 make_icons.py` to rebuild them.
+
+The drink logos come from the brand art in `pint_logos/`. `python3 make_logos.py` keys out each background (flat colour, or a circular mask where the logo is a disc), trims the transparent margin and scales the result down to `logo-*.png`. Those same files are used both for the print on the glass and for the tiles in the picker.
 
 Orientation comes from `deviceorientation`'s `beta`/`gamma`, converted to a gravity vector in the device's own frame. Tilt is the angle between the screen's up axis and world up, so it reads 0° upright and 90° flat on a table, whichever way you spin the phone about its own axis. The liquid is drawn in a frame rotated to align with gravity, and the surface height is solved by bisection against the screen outline so the volume on screen always matches the fill level.
 

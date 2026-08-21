@@ -1,5 +1,9 @@
-const CACHE = 'beer-v3';
-const ASSETS = ['./', './index.html', './manifest.json'];
+const CACHE = 'beer-v4';
+const ASSETS = [
+  './', './index.html', './manifest.json',
+  './logo-michelob.png', './logo-pliny.png', './logo-hypa.png',
+  './logo-guinness.png', './logo-caesar.png'
+];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));

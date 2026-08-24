@@ -1,4 +1,4 @@
-const CACHE = 'beer-v4';
+const CACHE = 'beer-v5';
 const ASSETS = [
   './', './index.html', './manifest.json',
   './logo-michelob.png', './logo-pliny.png', './logo-hypa.png',

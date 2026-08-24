@@ -128,6 +128,67 @@ canvas { display:block; position:absolute; inset:0; }
 #flash.show { opacity:1; transform:translate(-50%,-50%) scale(1); }
 #flash.sm { font-size:22px; padding:12px 22px; }
 
+/* ── split the G scorecard ── */
+#sg {
+  position:fixed; inset:0; z-index:11;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(6,4,2,0.70); backdrop-filter:blur(5px);
+  opacity:0; pointer-events:none; transition:opacity 0.26s;
+}
+#sg.show { opacity:1; pointer-events:auto; }
+#sg-card {
+  --sg-c:#c9a227;
+  width:min(320px, calc(100% - 40px));
+  background:linear-gradient(#131110, #060505);
+  border:1px solid rgba(255,248,236,0.13); border-radius:22px;
+  padding:22px 24px 20px; text-align:center;
+  box-shadow:0 20px 60px rgba(0,0,0,0.75), inset 0 1px 0 rgba(255,248,236,0.10);
+  transform:translateY(18px) scale(0.94); transition:transform 0.32s cubic-bezier(.2,1.3,.4,1);
+}
+#sg.show #sg-card { transform:none; }
+.sg-kicker {
+  color:rgba(255,248,236,0.42); font-size:11px; font-weight:800;
+  letter-spacing:2.6px; text-transform:uppercase;
+}
+.sg-dial { position:relative; width:132px; height:132px; margin:12px auto 4px; }
+.sg-dial svg { width:100%; height:100%; transform:rotate(-90deg); }
+.sg-dial circle { fill:none; stroke-width:9; stroke-linecap:round; }
+.sg-trk { stroke:rgba(255,248,236,0.10); }
+.sg-arc {
+  stroke:var(--sg-c); stroke-dasharray:326.73;
+  filter:drop-shadow(0 0 7px color-mix(in srgb, var(--sg-c) 55%, transparent));
+  transition:stroke-dashoffset 0.9s cubic-bezier(.2,.9,.2,1);
+}
+.sg-num {
+  position:absolute; inset:0; display:flex;
+  align-items:center; justify-content:center;
+  font-size:40px; font-weight:800; color:#fff8ec; letter-spacing:-1px;
+}
+.sg-num i { font-size:19px; font-style:normal; opacity:0.5; margin-left:1px; }
+.sg-title {
+  color:var(--sg-c); font-size:20px; font-weight:800;
+  letter-spacing:1.4px; text-transform:uppercase; margin-top:6px;
+}
+.sg-msg {
+  color:rgba(255,248,236,0.74); font-size:14px; line-height:1.5;
+  margin-top:7px;
+}
+.sg-gap {
+  color:rgba(255,248,236,0.40); font-size:12px; font-weight:600;
+  letter-spacing:0.5px; margin-top:9px;
+}
+#sg-btn {
+  margin-top:15px; width:100%;
+  background:#fff8ec; color:#0b0908; border:none; border-radius:10px;
+  padding:13px 0; font-size:16px; font-weight:800; letter-spacing:1.4px;
+  font-family:inherit; cursor:pointer;
+}
+#sg-btn:active { transform:scale(0.975); }
+.sg-best {
+  color:rgba(255,248,236,0.34); font-size:11px; font-weight:700;
+  letter-spacing:1.4px; text-transform:uppercase; margin-top:12px; min-height:13px;
+}
+
 #overlay {
   position:fixed; inset:0; display:flex; flex-direction:column;
   align-items:center; justify-content:center;
@@ -169,6 +230,24 @@ canvas { display:block; position:absolute; inset:0; }
   <div id="hint"></div>
   <div id="flash"></div>
 
+  <div id="sg">
+    <div id="sg-card">
+      <div class="sg-kicker">Split the G</div>
+      <div class="sg-dial">
+        <svg viewBox="0 0 120 120" aria-hidden="true">
+          <circle class="sg-trk" cx="60" cy="60" r="52"></circle>
+          <circle class="sg-arc" id="sg-arc" cx="60" cy="60" r="52"></circle>
+        </svg>
+        <div class="sg-num"><span id="sg-score">0</span><i>%</i></div>
+      </div>
+      <div class="sg-title" id="sg-title"></div>
+      <div class="sg-msg" id="sg-msg"></div>
+      <div class="sg-gap" id="sg-gap"></div>
+      <div class="sg-best" id="sg-best"></div>
+      <button id="sg-btn">CHEERS</button>
+    </div>
+  </div>
+
   <div id="overlay" class="show">
     <h1>BEER</h1>
     <div class="sub" id="ol-sub">Hold your phone upright to pour.<br>Tilt it back to drink.</div>
@@ -196,6 +275,13 @@ const GRAV_TAU       = 0.10;  // s: gravity low-pass, so jitter doesn't slosh th
 const DOWN_TAU       = 0.07;  // s: low-pass on the surface angle
 const MAX_BUBBLES    = 150;
 
+/* ── split the G ── */
+const SG_ARM     = 0.98;  // a pint this full is a legal attempt
+const SG_UPRIGHT = 28;    // deg: below this the glass counts as back down
+const SG_SETTLE  = 0.50;  // s of stillness that ends the gulp and scores it
+const SG_SIGMA   = 0.028; // miss of this much of the screen height scores ~61%
+const PINT_MM    = 150;   // mm of liquid in a real pint, so misses read in mm
+
 /* ── what's on tap ───────────────────────────────────────────
    grad     four stops down the liquid, lightest at the surface
    foam     head colours: crest, body, shaded underside
@@ -208,6 +294,8 @@ const MAX_BUBBLES    = 150;
    tile     backing colour behind that logo in the picker
    glow     halo under the logo: 'light' for dark art, 'dark' for light art
    accent   the drink's colour, used for the picker's selected row
+   splitG   where the bar of the wordmark's G sits down the logo art, 0..1 --
+            only Guinness has one, and it's what you aim the beer line at
 */
 const DRINKS = [
   {
@@ -248,7 +336,7 @@ const DRINKS = [
     foam: ['#fff8ec', '#f1e0c2', '#d6bd95'],
     head: 0.100, alpha: 1, haze: 0,             // thick creamy collar
     bubble: 0.45, bubbleAlpha: 0.55, fizz: 0.32,
-    accent: '#c9a227'
+    accent: '#c9a227', splitG: 0.896
   },
   {
     id: 'caesar', name: 'Clamato Caesar', style: 'Not a beer. Still a drink.',
@@ -537,12 +625,110 @@ const bubbles = [];
 const hintEl  = document.getElementById('hint');
 const flashEl = document.getElementById('flash');
 
+const sg      = document.getElementById('sg');
+const sgCard  = document.getElementById('sg-card');
+const sgArc   = document.getElementById('sg-arc');
+const sgScore = document.getElementById('sg-score');
+const sgTitle = document.getElementById('sg-title');
+const sgMsg   = document.getElementById('sg-msg');
+const sgGap   = document.getElementById('sg-gap');
+const sgBest  = document.getElementById('sg-best');
+
 function flash(msg, small) {
   if (!started) return;
   flashEl.textContent = msg;
   flashEl.classList.toggle('sm', !!small);
   flashEl.classList.add('show');
   setTimeout(() => flashEl.classList.remove('show'), 900);
+}
+
+/* ── split the G ───────────────────────────────────────────────
+   The Dublin party trick: start from a full pint and take one gulp that leaves
+   the beer line exactly halfway down the bar of the G in GUINNESS. The G is
+   printed on the glass by drawLogo, so the target is a fixed screen height --
+   `splitG` is how far down the logo art the bar sits, measured off the pixels.
+
+   Scoring reads the beer line the way you'd read it in the pub: with the glass
+   held upright, where the stout meets the collar. That's the liquid surface, so
+   the foam's HEADROOM comes out of the level first. */
+let sgPhase = 'off';       // off | armed | sipping | done
+let sgStill = 0;           // s the glass has been sitting still and upright
+let sgGlow  = 0;           // 0..1 fade on the aiming line
+let sgDash  = 0;           // marching-ants offset
+
+function gBarY() {
+  if (!drink.splitG) return 0;
+  const r = logoRect();
+  return r ? r.y + r.h * drink.splitG : 0;
+}
+
+/* screen height of the beer/foam line at a given fill, glass held upright */
+function beerLineY(lv) { return H * (1 - lv * (1 - HEADROOM)); }
+
+function updateSplitG(dt) {
+  if (!gBarY()) { sgPhase = 'off'; return; }
+
+  if (sgPhase === 'sipping') {
+    if (state === 'filling') { sgPhase = 'off'; return; }   // topped up: no attempt
+    if (level <= EMPTY_EPS) { scoreSplitG(); return; }      // sank the lot
+    sgStill = (pourRate < 0.004 && tilt < SG_UPRIGHT) ? sgStill + dt : 0;
+    if (sgStill >= SG_SETTLE) scoreSplitG();
+    return;
+  }
+
+  if (state === 'ready' && level >= SG_ARM) { sgPhase = 'armed'; sgStill = 0; }
+  else if (sgPhase === 'armed' && level < SG_ARM - 0.004) sgPhase = 'sipping';
+  else if (sgPhase !== 'armed') sgPhase = 'off';
+}
+
+function scoreSplitG() {
+  sgPhase = 'done';
+  const err = beerLineY(level) - gBarY();     // + = line below the bar, i.e. too big a gulp
+  const score = Math.max(0, Math.round(100 * Math.exp(-0.5 * Math.pow(err / (H * SG_SIGMA), 2))));
+  showSplitG(score, err / H * PINT_MM);
+}
+
+const SG_GRADES = [
+  [100, 'Perfect split',  'Dead on the bar. The barman just nodded at you.'],
+  [ 95, 'Split the G!',   'Textbook. That one goes on the wall.'],
+  [ 85, 'So close',       'A whisker out. The G is very nearly halved.'],
+  [ 70, 'Decent split',   'Respectable. Nobody is taking the pint off you.'],
+  [ 50, 'Half a split',   'You found the G. You did not split it.'],
+  [ 25, 'Missed it',      'Bold gulp. Wrong gulp.'],
+  [  5, 'Not close',      'That was a drink, not an attempt.'],
+  [  0, 'No split',       'There was a G in there somewhere.']
+];
+
+function showSplitG(score, mm) {
+  const grade = SG_GRADES.find(g => score >= g[0]);
+  const off = Math.abs(mm) < 0.6 ? 'dead on the mark'
+            : `${Math.abs(mm).toFixed(1)} mm ${mm > 0 ? 'below' : 'above'} the mark`;
+
+  const prev = +localStorage.getItem('beer-split-g') || 0;
+  localStorage.setItem('beer-split-g', Math.max(score, prev));
+
+  sgCard.style.setProperty('--sg-c', score >= 85 ? '#e8c34a' : score >= 50 ? '#c9a227' : '#8c7a4a');
+  sgTitle.textContent = grade[1];
+  sgMsg.textContent   = grade[2];
+  sgGap.textContent   = off;
+  sgBest.textContent  = score > prev ? 'New best' : prev ? `Best ${prev}%` : '';
+
+  // wind the dial back, then let CSS sweep it round while the number counts up
+  sgArc.style.transition = 'none';
+  sgArc.style.strokeDashoffset = 326.73;
+  sgScore.textContent = '0';
+  sg.classList.add('show');
+  requestAnimationFrame(() => {
+    sgArc.style.transition = '';
+    sgArc.style.strokeDashoffset = (326.73 * (1 - score / 100)).toFixed(1);
+    const t0 = performance.now();
+    const tick = (t) => {
+      const k = Math.min(1, (t - t0) / 750);
+      sgScore.textContent = Math.round(score * (1 - Math.pow(1 - k, 3)));
+      if (k < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
 }
 
 function updateLevel(dt) {
@@ -783,12 +969,18 @@ function drawLiquid(vs) {
    the beer and stays put no matter what the liquid does. A halo under it
    keeps dark art legible over the dark empty screen and light art legible
    over pale beer. */
-function drawLogo() {
+function logoRect() {
   const im = logoImgs[drink.id];
-  if (!im || !im.complete || !im.naturalWidth) return;
+  if (!im || !im.complete || !im.naturalWidth) return null;
   const s = Math.min(W * 0.62 / im.naturalWidth, H * 0.23 / im.naturalHeight);
   const w = im.naturalWidth * s, h = im.naturalHeight * s;
-  const x = (W - w) / 2, y = H * 0.30 - h / 2;
+  return { im, w, h, x: (W - w) / 2, y: H * 0.30 - h / 2 };
+}
+
+function drawLogo() {
+  const r = logoRect();
+  if (!r) return;
+  const { im, x, y, w, h } = r;
 
   ctx.save();
   ctx.globalAlpha = 0.94;
@@ -798,6 +990,35 @@ function drawLogo() {
   ctx.shadowColor = 'transparent';
   ctx.shadowBlur = 0;
   ctx.drawImage(im, x, y, w, h);          // crisp print on top
+  ctx.restore();
+}
+
+/* the line to aim the gulp at: printed on the glass like the G it runs through,
+   so it stays put while the beer moves. Only up while an attempt is live. */
+function drawSplitLine() {
+  const y = gBarY();
+  if (!y || sgGlow < 0.01) return;
+  ctx.save();
+  ctx.globalAlpha = sgGlow * 0.8;
+  ctx.strokeStyle = 'rgba(255,248,236,0.92)';
+  ctx.lineWidth = 1.6;
+  ctx.setLineDash([8, 9]);
+  ctx.lineDashOffset = -sgDash;
+  ctx.beginPath();
+  ctx.moveTo(0, y);
+  ctx.lineTo(W, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(255,248,236,0.92)';
+  for (const s of [1, -1]) {
+    const x = s > 0 ? 0 : W;
+    ctx.beginPath();
+    ctx.moveTo(x, y - 7);
+    ctx.lineTo(x, y + 7);
+    ctx.lineTo(x + s * 11, y);
+    ctx.closePath();
+    ctx.fill();
+  }
   ctx.restore();
 }
 
@@ -829,6 +1050,7 @@ function draw() {
   drawBackdrop();
   drawLiquid(surfaceV());
   drawLogo();
+  drawSplitLine();
   drawGlassSheen();
 }
 
@@ -838,6 +1060,8 @@ function updateHint() {
   let t;
   if (state === 'filling') t = 'Pouring…';
   else if (state === 'empty') t = hasSensor ? 'Hold upright to fill' : 'Drag or use ← → ↑ ↓ to tilt';
+  else if (sgPhase === 'sipping') t = hasSensor ? 'Stop at the G…' : 'Level it out to call it';
+  else if (sgPhase === 'armed') t = 'One gulp, down to the G';
   else if (pourRate > 0.02) t = 'Glug glug glug…';
   else t = hasSensor ? 'Tilt to drink' : 'Drag to tilt · tap to refill';
   if (t !== lastHint) { hintEl.textContent = t; lastHint = t; }
@@ -856,6 +1080,10 @@ function loop(now) {
   checkLayout();
   projectGlass();
   updateLevel(dt);
+  updateSplitG(dt);
+  const live = sgPhase === 'armed' || sgPhase === 'sipping';
+  sgGlow += ((live ? 1 : 0) - sgGlow) * Math.min(1, dt * 5);
+  sgDash += dt * 16;
   const vs = surfaceV();
   updateBubbles(dt, vs);
   updateHint();
@@ -898,11 +1126,18 @@ function pick(d) {
   localStorage.setItem('beer-style', d.id);
   markDrink();
   closeMenu();
+  closeSplitG();
   flash(d.name, true);
 }
 
 function openMenu()  { menu.classList.add('show'); }
 function closeMenu() { menu.classList.remove('show'); }
+
+/* ── scorecard ── */
+function closeSplitG() { sg.classList.remove('show'); }
+document.getElementById('sg-btn').addEventListener('click', (e) => { e.stopPropagation(); closeSplitG(); });
+sgCard.addEventListener('click', (e) => e.stopPropagation());
+sg.addEventListener('click', closeSplitG);          // tap the backdrop to dismiss
 
 menuBtn.addEventListener('click', (e) => { e.stopPropagation(); openMenu(); });
 document.getElementById('menu-card').addEventListener('click', (e) => e.stopPropagation());
@@ -975,7 +1210,7 @@ document.addEventListener('keydown', (e) => {
   if (k === 'ArrowDown')  { mPitch = Math.min(110, mPitch + 8);  e.preventDefault(); }
   if (k === '0' || k === 'r' || k === 'R') { mRoll = 0; mPitch = 0; }
   if (k === ' ') { topUp(); e.preventDefault(); }
-  if (k === 'Escape') closeMenu();
+  if (k === 'Escape') { closeMenu(); closeSplitG(); }
   if (k === 'b' || k === 'B') pick(DRINKS[(DRINKS.indexOf(drink) + 1) % DRINKS.length]);
 });
 
